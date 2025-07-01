@@ -11,7 +11,6 @@ on:
         description: "Android NDK version (e.g. r27)"
         required: true
         default: "r27"
-# 删除 push 触发，仅保留 workflow_dispatch
 
 jobs:
   build:
@@ -95,7 +94,7 @@ jobs:
           make distclean || true
           git clean -xdf || true
 
-      - name: Configure FFmpeg for ${{ matrix.abi }} (shared)
+      - name: Configure FFmpeg for ${{ matrix.abi }} (shared, 16KB page size)
         working-directory: ffmpeg-src
         env:
           ARCH: ${{ env.ARCH }}
@@ -123,7 +122,8 @@ jobs:
             --disable-doc \
             --disable-programs \
             --enable-pic \
-            --disable-debug
+            --disable-debug \
+            --extra-ldflags="-Wl,-z,max-page-size=16384"
 
       - name: Build FFmpeg for ${{ matrix.abi }}
         working-directory: ffmpeg-src
