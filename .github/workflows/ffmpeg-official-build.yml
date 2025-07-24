@@ -132,6 +132,10 @@ jobs:
           make -j$(nproc)
           make install
 
+      - name: Copy config.h to output dir
+        working-directory: ffmpeg-src
+        run: cp config.h ../android-build/${{ matrix.abi }}/config.h
+
       - name: Upload ${{ matrix.abi }} build artifact
         uses: actions/upload-artifact@v4
         with:
