@@ -56,7 +56,6 @@ jobs:
           git clone https://code.videolan.org/videolan/dav1d.git dav1d-src
           cd dav1d-src
           if [ "${{ github.event.inputs.dav1d-tag }}" = "latest" ]; then
-            # checkout latest tag
             latest_tag="$(git describe --tags `git rev-list --tags --max-count=1`)"
             echo "Using dav1d tag: $latest_tag"
             git checkout "$latest_tag"
@@ -101,7 +100,6 @@ jobs:
               export STRIP=$TOOLCHAIN/bin/llvm-strip
               ;;
           esac
-          # Only enable NEON on ARM targets
           if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "arm" ]; then
             echo "NEON_FLAG=--enable-neon" >> $GITHUB_ENV
           else
@@ -134,26 +132,31 @@ jobs:
           mkdir -p "$PREFIX"
           cd dav1d-src
 
-          # Create meson cross file
-          cat > cross-${{ matrix.abi }}.ini <<EOF
-[binaries]
-c = '${CC}'
-ar = '${AR}'
-strip = '${STRIP}'
-pkgconfig = 'pkg-config'
-nasm = '/usr/bin/nasm'
+          CROSS_FILE="cross-${{ matrix.abi }}.ini"
+          echo "Generating Meson cross file: $CROSS_FILE"
 
-[host_machine]
-system = 'android'
-cpu_family = '${CPU_FAMILY}'
-cpu = '${CPU_FAMILY}'
-endian = 'little'
-EOF
+          # 用 printf 分行生成，避免 YAML 对 [binaries] 的误解析
+          printf "%s\n" \
+"[binaries]" \
+"c = '${CC}'" \
+"ar = '${AR}'" \
+"strip = '${STRIP}'" \
+"pkgconfig = 'pkg-config'" \
+"nasm = '/usr/bin/nasm'" \
+"" \
+"[properties]" \
+"needs_exe_wrapper = true" \
+"" \
+"[host_machine]" \
+"system = 'android'" \
+"cpu_family = '${CPU_FAMILY}'" \
+"cpu = '${CPU_FAMILY}'" \
+"endian = 'little'" \
+> "$CROSS_FILE"
 
-          # Build and install
           export LDFLAGS="-Wl,-z,max-page-size=16384"
           meson setup build-${{ matrix.abi }} \
-            --cross-file=cross-${{ matrix.abi }}.ini \
+            --cross-file="$CROSS_FILE" \
             --buildtype=release \
             --prefix="$PREFIX" \
             -Ddefault_library=shared \
