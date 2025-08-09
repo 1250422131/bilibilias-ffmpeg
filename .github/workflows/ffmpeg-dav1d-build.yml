@@ -78,6 +78,7 @@ jobs:
               export AR=$TOOLCHAIN/bin/llvm-ar
               export RANLIB=$TOOLCHAIN/bin/llvm-ranlib
               export STRIP=$TOOLCHAIN/bin/llvm-strip
+              export NM=$TOOLCHAIN/bin/llvm-nm
               ;;
             armeabi-v7a)
               export ARCH=arm
@@ -88,6 +89,7 @@ jobs:
               export AR=$TOOLCHAIN/bin/llvm-ar
               export RANLIB=$TOOLCHAIN/bin/llvm-ranlib
               export STRIP=$TOOLCHAIN/bin/llvm-strip
+              export NM=$TOOLCHAIN/bin/llvm-nm
               ;;
             x86_64)
               export ARCH=x86_64
@@ -98,6 +100,7 @@ jobs:
               export AR=$TOOLCHAIN/bin/llvm-ar
               export RANLIB=$TOOLCHAIN/bin/llvm-ranlib
               export STRIP=$TOOLCHAIN/bin/llvm-strip
+              export NM=$TOOLCHAIN/bin/llvm-nm
               ;;
           esac
           if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "arm" ]; then
@@ -113,6 +116,7 @@ jobs:
           echo "AR=$AR" >> $GITHUB_ENV
           echo "RANLIB=$RANLIB" >> $GITHUB_ENV
           echo "STRIP=$STRIP" >> $GITHUB_ENV
+          echo "NM=$NM" >> $GITHUB_ENV
 
       - name: Clean before configure
         working-directory: ffmpeg-src
@@ -135,7 +139,6 @@ jobs:
           CROSS_FILE="cross-${{ matrix.abi }}.ini"
           echo "Generating Meson cross file: $CROSS_FILE"
 
-          # 用 printf 分行生成，注意每个续行保持相同缩进，避免 YAML 误解析
           printf "%s\n" \
             "[binaries]" \
             "c = '${CC}'" \
@@ -190,6 +193,7 @@ jobs:
             --cross-prefix=$CROSS_PREFIX \
             --cc=$CC \
             --ar=$AR \
+            --nm=$NM \
             --ranlib=$RANLIB \
             --strip=$STRIP \
             --enable-cross-compile \
