@@ -135,24 +135,24 @@ jobs:
           CROSS_FILE="cross-${{ matrix.abi }}.ini"
           echo "Generating Meson cross file: $CROSS_FILE"
 
-          # 用 printf 分行生成，避免 YAML 对 [binaries] 的误解析
+          # 用 printf 分行生成，注意每个续行保持相同缩进，避免 YAML 误解析
           printf "%s\n" \
-"[binaries]" \
-"c = '${CC}'" \
-"ar = '${AR}'" \
-"strip = '${STRIP}'" \
-"pkgconfig = 'pkg-config'" \
-"nasm = '/usr/bin/nasm'" \
-"" \
-"[properties]" \
-"needs_exe_wrapper = true" \
-"" \
-"[host_machine]" \
-"system = 'android'" \
-"cpu_family = '${CPU_FAMILY}'" \
-"cpu = '${CPU_FAMILY}'" \
-"endian = 'little'" \
-> "$CROSS_FILE"
+            "[binaries]" \
+            "c = '${CC}'" \
+            "ar = '${AR}'" \
+            "strip = '${STRIP}'" \
+            "pkgconfig = 'pkg-config'" \
+            "nasm = '/usr/bin/nasm'" \
+            "" \
+            "[properties]" \
+            "needs_exe_wrapper = true" \
+            "" \
+            "[host_machine]" \
+            "system = 'android'" \
+            "cpu_family = '${CPU_FAMILY}'" \
+            "cpu = '${CPU_FAMILY}'" \
+            "endian = 'little'" \
+            > "$CROSS_FILE"
 
           export LDFLAGS="-Wl,-z,max-page-size=16384"
           meson setup build-${{ matrix.abi }} \
