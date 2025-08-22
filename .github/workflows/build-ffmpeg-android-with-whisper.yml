@@ -124,7 +124,6 @@ jobs:
           cmake --build "whisper-build-${{ matrix.abi }}" --target whisper -j"$(nproc)" || \
           cmake --build "whisper-build-${{ matrix.abi }}" -j"$(nproc)"
 
-          # 复制静态库（不同版本构建产物路径可能不同，做两种尝试）
           if [ -f "whisper-build-${{ matrix.abi }}/libwhisper.a" ]; then
             cp "whisper-build-${{ matrix.abi }}/libwhisper.a" "$DEPS_PREFIX/lib/"
           elif [ -f "whisper-build-${{ matrix.abi }}/src/libwhisper.a" ]; then
@@ -133,31 +132,29 @@ jobs:
             echo "libwhisper.a not found"; ls -R "whisper-build-${{ matrix.abi }}"; exit 1
           fi
 
-          # 头文件
           if [ -f "whisper-src/whisper.h" ]; then
             cp "whisper-src/whisper.h" "$DEPS_PREFIX/include/"
           else
-            # 兜底：某些版本在 include/ 目录
             find whisper-src -maxdepth 2 -name whisper.h -print -exec cp {} "$DEPS_PREFIX/include/" \;
           fi
 
-          # 生成最小 pkg-config 文件
-          cat > "$DEPS_PREFIX/lib/pkgconfig/whisper.pc" <<'EOF'
-prefix=@PREFIX@
-exec_prefix=${prefix}
-libdir=${prefix}/lib
-includedir=${prefix}/include
+          # 用 sed 去掉 YAML 必要缩进，避免 .pc 文件带前导空格
+          sed 's/^[[:space:]]*//' <<'EOF' > "$DEPS_PREFIX/lib/pkgconfig/whisper.pc"
+            prefix=@PREFIX@
+            exec_prefix=${prefix}
+            libdir=${prefix}/lib
+            includedir=${prefix}/include
 
-Name: whisper
-Description: Whisper inference library
-Version: @VERSION@
-Libs: -L${libdir} -lwhisper
-Cflags: -I${includedir}
-EOF
+            Name: whisper
+            Description: Whisper inference library
+            Version: @VERSION@
+            Libs: -L${libdir} -lwhisper
+            Cflags: -I${includedir}
+          EOF
+
           sed -i "s|@PREFIX@|$DEPS_PREFIX|g" "$DEPS_PREFIX/lib/pkgconfig/whisper.pc"
           sed -i "s|@VERSION@|${WHISPER_TAG}|g" "$DEPS_PREFIX/lib/pkgconfig/whisper.pc"
 
-          # 让 FFmpeg 的 pkg-config 只看到目标架构依赖
           echo "PKG_CONFIG_PATH=$DEPS_PREFIX/lib/pkgconfig" >> $GITHUB_ENV
           echo "PKG_CONFIG_LIBDIR=$DEPS_PREFIX/lib/pkgconfig" >> $GITHUB_ENV
 
@@ -184,7 +181,6 @@ EOF
           set -euo pipefail
           mkdir -p ../android-build/${{ matrix.abi }}
 
-          # 针对 arm/arm64 开启 NEON
           NEON_FLAG=""
           if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "arm" ]; then
             NEON_FLAG="--enable-neon"
