@@ -130,7 +130,19 @@ jobs:
           fi
 
           find "whisper-build-${{ matrix.abi }}" -name "libggml*.so" -exec cp {} "$DEPS_PREFIX/lib/" \; || true
-          cp "whisper-src/whisper.h" "$DEPS_PREFIX/include/"
+
+          # 查找并复制头文件（优先级：include/whisper.h > whisper.h > include/whisper/whisper.h）
+          if [ -f "whisper-src/include/whisper.h" ]; then
+            cp "whisper-src/include/whisper.h" "$DEPS_PREFIX/include/"
+          elif [ -f "whisper-src/whisper.h" ]; then
+            cp "whisper-src/whisper.h" "$DEPS_PREFIX/include/"
+          elif [ -f "whisper-src/include/whisper/whisper.h" ]; then
+            cp "whisper-src/include/whisper/whisper.h" "$DEPS_PREFIX/include/"
+          else
+            echo "whisper.h not found, searching..."
+            find whisper-src -name "whisper.h" -type f
+            find whisper-src -name "whisper.h" -type f -exec cp {} "$DEPS_PREFIX/include/" \; || exit 1
+          fi
 
           echo "DEPS_PREFIX=$DEPS_PREFIX" >> $GITHUB_ENV
 
@@ -158,6 +170,8 @@ jobs:
           echo "PKG_CONFIG_PATH: $PKG_CONFIG_PATH"
           echo "Files:"
           ls -la "$PKG_CONFIG_PATH/"
+          echo "whisper.h location:"
+          find "$DEPS_PREFIX" -name "whisper.h" -type f
           echo "whisper.pc content:"
           cat "$PKG_CONFIG_PATH/whisper.pc"
           echo "Tests:"
