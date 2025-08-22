@@ -102,11 +102,6 @@ jobs:
           echo "ANDROID_PLATFORM=android-${API_LEVEL}" >> $GITHUB_ENV
 
       - name: Build and stage whisper.cpp for ${{ matrix.abi }}
-        env:
-          NDK: ${{ env.NDK }}
-          ANDROID_ABI: ${{ env.ANDROID_ABI }}
-          ANDROID_PLATFORM: ${{ env.ANDROID_PLATFORM }}
-          WHISPER_TAG: ${{ env.WHISPER_TAG }}
         run: |
           set -euo pipefail
           DEPS_PREFIX="$PWD/android-deps/${{ matrix.abi }}"
@@ -124,82 +119,56 @@ jobs:
 
           cmake --build "whisper-build-${{ matrix.abi }}" -j"$(nproc)"
 
-          # 复制 libwhisper（优先共享库）
+          # 复制 libwhisper
           if [ -f "whisper-build-${{ matrix.abi }}/src/libwhisper.so" ]; then
             cp "whisper-build-${{ matrix.abi }}/src/libwhisper.so" "$DEPS_PREFIX/lib/"
-            WHISPER_LIBTYPE=so
-          elif [ -f "whisper-build-${{ matrix.abi }}/src/libwhisper.a" ]; then
-            cp "whisper-build-${{ matrix.abi }}/src/libwhisper.a" "$DEPS_PREFIX/lib/"
-            WHISPER_LIBTYPE=a
           elif [ -f "whisper-build-${{ matrix.abi }}/libwhisper.so" ]; then
             cp "whisper-build-${{ matrix.abi }}/libwhisper.so" "$DEPS_PREFIX/lib/"
-            WHISPER_LIBTYPE=so
-          elif [ -f "whisper-build-${{ matrix.abi }}/libwhisper.a" ]; then
-            cp "whisper-build-${{ matrix.abi }}/libwhisper.a" "$DEPS_PREFIX/lib/"
-            WHISPER_LIBTYPE=a
           else
-            echo "libwhisper.(so|a) not found"; ls -R "whisper-build-${{ matrix.abi }}"; exit 1
+            echo "libwhisper.so not found"; ls -R "whisper-build-${{ matrix.abi }}"; exit 1
           fi
 
-          # 复制 ggml 运行时依赖（共享库优先）
-          if compgen -G "whisper-build-${{ matrix.abi }}/ggml/src/libggml*.so" > /dev/null; then
-            cp whisper-build-${{ matrix.abi }}/ggml/src/libggml*.so "$DEPS_PREFIX/lib/" || true
-          elif compgen -G "whisper-build-${{ matrix.abi }}/ggml/src/libggml*.a" > /dev/null; then
-            cp whisper-build-${{ matrix.abi }}/ggml/src/libggml*.a "$DEPS_PREFIX/lib/" || true
-          fi
+          # 复制 ggml 依赖
+          find "whisper-build-${{ matrix.abi }}" -name "libggml*.so" -exec cp {} "$DEPS_PREFIX/lib/" \; || true
 
           # 头文件
-          if [ -f "whisper-src/whisper.h" ]; then
-            cp "whisper-src/whisper.h" "$DEPS_PREFIX/include/"
-          else
-            find whisper-src -maxdepth 2 -name whisper.h -print -exec cp {} "$DEPS_PREFIX/include/" \;
-          fi
+          cp "whisper-src/whisper.h" "$DEPS_PREFIX/include/"
 
-          # 生成 pkg-config（Version 去掉开头的 v/V；加入 -lc++_shared 以满足 C++ 运行库）
-          WHISPER_VER="$(printf '%s' "${WHISPER_TAG}" | sed 's/^[vV]//')"
+          # 生成简化的 pkg-config
+          WHISPER_VER="${WHISPER_TAG#v}"  # 去掉前缀 v
+          cat > "$DEPS_PREFIX/lib/pkgconfig/whisper.pc" << EOF
+prefix=$DEPS_PREFIX
+exec_prefix=\${prefix}
+libdir=\${prefix}/lib
+includedir=\${prefix}/include
 
-          sed 's/^[[:space:]]*//' <<'EOF' > "$DEPS_PREFIX/lib/pkgconfig/whisper.pc"
-            prefix=@PREFIX@
-            exec_prefix=${prefix}
-            libdir=${prefix}/lib
-            includedir=${prefix}/include
+Name: whisper
+Description: Whisper inference library
+Version: $WHISPER_VER
+Libs: -L\${libdir} -lwhisper
+Cflags: -I\${includedir}
+EOF
 
-            Name: whisper
-            Description: Whisper inference library
-            Version: @VERSION@
-            Libs: -L${libdir} -lwhisper -lggml -lggml-cpu -lggml-base -lc++_shared -Wl,-rpath-link,${libdir}
-            Libs.private: -llog -lm -latomic
-            Cflags: -I${includedir}
-          EOF
+          echo "DEPS_PREFIX=$DEPS_PREFIX" >> $GITHUB_ENV
 
-          sed -i "s|@PREFIX@|$DEPS_PREFIX|g" "$DEPS_PREFIX/lib/pkgconfig/whisper.pc"
-          sed -i "s|@VERSION@|$WHISPER_VER|g" "$DEPS_PREFIX/lib/pkgconfig/whisper.pc"
-
-          echo "PKG_CONFIG_PATH=$DEPS_PREFIX/lib/pkgconfig" >> $GITHUB_ENV
-          echo "PKG_CONFIG_LIBDIR=$DEPS_PREFIX/lib/pkgconfig" >> $GITHUB_ENV
-
-      - name: Verify whisper pkg-config for ${{ matrix.abi }}
-        env:
-          PKG_CONFIG_PATH: ${{ env.PKG_CONFIG_PATH }}
-          PKG_CONFIG_LIBDIR: ${{ env.PKG_CONFIG_LIBDIR }}
+      - name: Verify pkg-config setup
         run: |
-          set -e
-          echo "PKG_CONFIG=$(command -v pkg-config)"
-          echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH"
-          echo "PKG_CONFIG_LIBDIR=$PKG_CONFIG_LIBDIR"
-          ls -la "$PKG_CONFIG_PATH"
-          echo "---- whisper.pc ----"
-          cat "$PKG_CONFIG_PATH/whisper.pc" || true
-          echo "---- pkg-config checks ----"
+          export PKG_CONFIG_PATH="$DEPS_PREFIX/lib/pkgconfig"
+          export PKG_CONFIG_LIBDIR="$DEPS_PREFIX/lib/pkgconfig"
+          
+          echo "=== PKG CONFIG DEBUG ==="
+          echo "PKG_CONFIG_PATH: $PKG_CONFIG_PATH"
+          echo "PKG_CONFIG_LIBDIR: $PKG_CONFIG_LIBDIR"
+          echo "Files in pkgconfig dir:"
+          ls -la "$PKG_CONFIG_PATH/"
+          echo "=== whisper.pc content ==="
+          cat "$PKG_CONFIG_PATH/whisper.pc"
+          echo "=== pkg-config tests ==="
           pkg-config --version
-          pkg-config --modversion whisper || true
-          if pkg-config --exists 'whisper >= 1.7.5'; then
-            echo "pkg-config exists check OK"
-          else
-            echo "pkg-config exists check FAILED"; exit 2
-          fi
-          echo "CFLAGS: $(pkg-config --cflags whisper)"
-          echo "LIBS:   $(pkg-config --libs whisper)"
+          echo "Modversion: $(pkg-config --modversion whisper 2>&1 || echo 'FAILED')"
+          echo "Exists test: $(pkg-config --exists 'whisper >= 1.7.5' && echo 'PASS' || echo 'FAIL')"
+          echo "CFLAGS: $(pkg-config --cflags whisper 2>&1 || echo 'FAILED')"
+          echo "LIBS: $(pkg-config --libs whisper 2>&1 || echo 'FAILED')"
 
       - name: Clean before configure
         working-directory: ffmpeg-src
@@ -209,19 +178,12 @@ jobs:
 
       - name: Configure FFmpeg for ${{ matrix.abi }} with whisper
         working-directory: ffmpeg-src
-        env:
-          ARCH: ${{ env.ARCH }}
-          CPU: ${{ env.CPU }}
-          CROSS_PREFIX: ${{ env.CROSS_PREFIX }}
-          CC: ${{ env.CC }}
-          AR: ${{ env.AR }}
-          RANLIB: ${{ env.RANLIB }}
-          STRIP: ${{ env.STRIP }}
-          NM: ${{ env.NM }}
-          PKG_CONFIG_PATH: ${{ env.PKG_CONFIG_PATH }}
-          PKG_CONFIG_LIBDIR: ${{ env.PKG_CONFIG_LIBDIR }}
         run: |
           set -euo pipefail
+          
+          export PKG_CONFIG_PATH="$DEPS_PREFIX/lib/pkgconfig"
+          export PKG_CONFIG_LIBDIR="$DEPS_PREFIX/lib/pkgconfig"
+          
           mkdir -p ../android-build/${{ matrix.abi }}
 
           NEON_FLAG=""
@@ -229,6 +191,7 @@ jobs:
             NEON_FLAG="--enable-neon"
           fi
 
+          echo "=== Starting FFmpeg configure ==="
           ./configure \
             --prefix="$PWD/../android-build/${{ matrix.abi }}" \
             --target-os=android \
@@ -250,7 +213,12 @@ jobs:
             --disable-debug \
             $NEON_FLAG \
             --enable-whisper \
-            --extra-ldflags="-Wl,-z,max-page-size=16384"
+            --extra-ldflags="-Wl,-z,max-page-size=16384" || {
+              echo "=== Configure failed, showing config.log whisper section ==="
+              grep -A 20 -B 5 "check_pkg_config whisper" ffbuild/config.log || true
+              grep -A 10 -B 5 "whisper" ffbuild/config.log | tail -50 || true
+              exit 1
+            }
 
       - name: Build FFmpeg for ${{ matrix.abi }}
         working-directory: ffmpeg-src
