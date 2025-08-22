@@ -1,4 +1,4 @@
-name: Build FFmpeg+whisper for Android (multi-ABI, API 34, shared)
+name: Build FFmpeg + Whisper for Android (multi-ABI, API 34, shared)
 
 on:
   workflow_dispatch:
@@ -25,6 +25,9 @@ jobs:
         abi: [arm64-v8a, armeabi-v7a, x86_64]
     env:
       API_LEVEL: 34
+      FFMPEG_TAG: ${{ inputs.ffmpeg-tag || 'n8.0' }}
+      ANDROID_NDK_VERSION: ${{ inputs.ndk-version || 'r27' }}
+      WHISPER_TAG: ${{ inputs.whisper-tag || 'v1.7.5' }}
     steps:
       - name: Checkout workflow files
         uses: actions/checkout@v4
@@ -39,80 +42,76 @@ jobs:
 
       - name: Download Android NDK
         run: |
-          wget -q https://dl.google.com/android/repository/android-ndk-${{ github.event.inputs.ndk-version || 'r27' }}-linux.zip
-          unzip -q -o android-ndk-${{ github.event.inputs.ndk-version || 'r27' }}-linux.zip
-          echo "ANDROID_NDK_VERSION=${{ github.event.inputs.ndk-version || 'r27' }}" >> $GITHUB_ENV
-          echo "NDK=$PWD/android-ndk-${{ github.event.inputs.ndk-version || 'r27' }}" >> $GITHUB_ENV
+          wget -q https://dl.google.com/android/repository/android-ndk-${ANDROID_NDK_VERSION}-linux.zip
+          unzip -q -o android-ndk-${ANDROID_NDK_VERSION}-linux.zip
+          echo "NDK=$PWD/android-ndk-${ANDROID_NDK_VERSION}" >> $GITHUB_ENV
 
       - name: Clone FFmpeg
         run: |
           git clone https://github.com/FFmpeg/FFmpeg ffmpeg-src
           cd ffmpeg-src
           git fetch --tags
-          git checkout ${{ github.event.inputs.ffmpeg-tag || 'n8.0' }}
+          git checkout "${FFMPEG_TAG}"
 
       - name: Clone whisper.cpp
         run: |
-          git clone --depth=1 -b ${{ github.event.inputs.whisper-tag || 'v1.7.5' }} https://github.com/ggerganov/whisper.cpp whisper-src
+          git clone --depth=1 -b "${WHISPER_TAG}" https://github.com/ggerganov/whisper.cpp whisper-src
 
       - name: Set up toolchain and env for ${{ matrix.abi }}
         run: |
-          NDK=$PWD/android-ndk-${{ github.event.inputs.ndk-version || 'r27' }}
-          TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64
+          NDK="$PWD/android-ndk-${ANDROID_NDK_VERSION}"
+          TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
           case "${{ matrix.abi }}" in
             arm64-v8a)
-              export ARCH=arm64
-              export CPU=armv8-a
-              export ANDROID_ABI=arm64-v8a
-              export CROSS_PREFIX=$TOOLCHAIN/bin/aarch64-linux-android-
-              export CC=$TOOLCHAIN/bin/aarch64-linux-android${API_LEVEL}-clang
-              export CXX=$TOOLCHAIN/bin/aarch64-linux-android${API_LEVEL}-clang++
+              ARCH=arm64
+              CPU=armv8-a
+              ANDROID_ABI=arm64-v8a
+              CROSS_PREFIX="$TOOLCHAIN/bin/aarch64-linux-android-"
+              CC="$TOOLCHAIN/bin/aarch64-linux-android${API_LEVEL}-clang"
+              CXX="$TOOLCHAIN/bin/aarch64-linux-android${API_LEVEL}-clang++"
               ;;
             armeabi-v7a)
-              export ARCH=arm
-              export CPU=armv7-a
-              export ANDROID_ABI=armeabi-v7a
-              export CROSS_PREFIX=$TOOLCHAIN/bin/arm-linux-androideabi-
-              export CC=$TOOLCHAIN/bin/armv7a-linux-androideabi${API_LEVEL}-clang
-              export CXX=$TOOLCHAIN/bin/armv7a-linux-androideabi${API_LEVEL}-clang++
+              ARCH=arm
+              CPU=armv7-a
+              ANDROID_ABI=armeabi-v7a
+              CROSS_PREFIX="$TOOLCHAIN/bin/arm-linux-androideabi-"
+              CC="$TOOLCHAIN/bin/armv7a-linux-androideabi${API_LEVEL}-clang"
+              CXX="$TOOLCHAIN/bin/armv7a-linux-androideabi${API_LEVEL}-clang++"
               ;;
             x86_64)
-              export ARCH=x86_64
-              export CPU=x86-64
-              export ANDROID_ABI=x86_64
-              export CROSS_PREFIX=$TOOLCHAIN/bin/x86_64-linux-android-
-              export CC=$TOOLCHAIN/bin/x86_64-linux-android${API_LEVEL}-clang
-              export CXX=$TOOLCHAIN/bin/x86_64-linux-android${API_LEVEL}-clang++
+              ARCH=x86_64
+              CPU=x86-64
+              ANDROID_ABI=x86_64
+              CROSS_PREFIX="$TOOLCHAIN/bin/x86_64-linux-android-"
+              CC="$TOOLCHAIN/bin/x86_64-linux-android${API_LEVEL}-clang"
+              CXX="$TOOLCHAIN/bin/x86_64-linux-android${API_LEVEL}-clang++"
               ;;
           esac
-          export AR=$TOOLCHAIN/bin/llvm-ar
-          export RANLIB=$TOOLCHAIN/bin/llvm-ranlib
-          export STRIP=$TOOLCHAIN/bin/llvm-strip
-          export NM=$TOOLCHAIN/bin/llvm-nm
-          export ANDROID_PLATFORM=android-${API_LEVEL}
 
           echo "ARCH=$ARCH" >> $GITHUB_ENV
           echo "CPU=$CPU" >> $GITHUB_ENV
+          echo "ANDROID_ABI=$ANDROID_ABI" >> $GITHUB_ENV
           echo "CROSS_PREFIX=$CROSS_PREFIX" >> $GITHUB_ENV
           echo "CC=$CC" >> $GITHUB_ENV
           echo "CXX=$CXX" >> $GITHUB_ENV
-          echo "AR=$AR" >> $GITHUB_ENV
-          echo "RANLIB=$RANLIB" >> $GITHUB_ENV
-          echo "STRIP=$STRIP" >> $GITHUB_ENV
-          echo "NM=$NM" >> $GITHUB_ENV
-          echo "ANDROID_ABI=$ANDROID_ABI" >> $GITHUB_ENV
-          echo "ANDROID_PLATFORM=$ANDROID_PLATFORM" >> $GITHUB_ENV
+          echo "AR=$TOOLCHAIN/bin/llvm-ar" >> $GITHUB_ENV
+          echo "RANLIB=$TOOLCHAIN/bin/llvm-ranlib" >> $GITHUB_ENV
+          echo "STRIP=$TOOLCHAIN/bin/llvm-strip" >> $GITHUB_ENV
+          echo "NM=$TOOLCHAIN/bin/llvm-nm" >> $GITHUB_ENV
+          echo "ANDROID_PLATFORM=android-${API_LEVEL}" >> $GITHUB_ENV
 
       - name: Build and install whisper.cpp for ${{ matrix.abi }}
         env:
-          ANDROID_PLATFORM: ${{ env.ANDROID_PLATFORM }}
-          ANDROID_ABI: ${{ env.ANDROID_ABI }}
           NDK: ${{ env.NDK }}
+          ANDROID_ABI: ${{ env.ANDROID_ABI }}
+          ANDROID_PLATFORM: ${{ env.ANDROID_PLATFORM }}
+          WHISPER_TAG: ${{ env.WHISPER_TAG }}
         run: |
-          DEPS_PREFIX=$PWD/android-deps/${{ matrix.abi }}
+          set -euo pipefail
+          DEPS_PREFIX="$PWD/android-deps/${{ matrix.abi }}"
           mkdir -p "$DEPS_PREFIX"/{lib,include,lib/pkgconfig}
 
-          cmake -S whisper-src -B whisper-build-${{ matrix.abi }} -G Ninja \
+          cmake -S whisper-src -B "whisper-build-${{ matrix.abi }}" -G Ninja \
             -DANDROID_NDK="$NDK" \
             -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI="$ANDROID_ABI" \
@@ -122,13 +121,27 @@ jobs:
             -DWHISPER_BUILD_SHARED_LIB=OFF \
             -DCMAKE_BUILD_TYPE=Release
 
-          cmake --build whisper-build-${{ matrix.abi }} --target whisper -j$(nproc)
+          cmake --build "whisper-build-${{ matrix.abi }}" --target whisper -j"$(nproc)" || \
+          cmake --build "whisper-build-${{ matrix.abi }}" -j"$(nproc)"
 
-          # 拷贝产物（静态库 + 头文件）
-          cp whisper-build-${{ matrix.abi }}/libwhisper.a "$DEPS_PREFIX/lib/" || cp whisper-build-${{ matrix.abi }}/src/libwhisper.a "$DEPS_PREFIX/lib/"
-          cp whisper-src/whisper.h "$DEPS_PREFIX/include/"
+          # 复制静态库（不同版本构建产物路径可能不同，做两种尝试）
+          if [ -f "whisper-build-${{ matrix.abi }}/libwhisper.a" ]; then
+            cp "whisper-build-${{ matrix.abi }}/libwhisper.a" "$DEPS_PREFIX/lib/"
+          elif [ -f "whisper-build-${{ matrix.abi }}/src/libwhisper.a" ]; then
+            cp "whisper-build-${{ matrix.abi }}/src/libwhisper.a" "$DEPS_PREFIX/lib/"
+          else
+            echo "libwhisper.a not found"; ls -R "whisper-build-${{ matrix.abi }}"; exit 1
+          fi
 
-          # 生成最小 pkg-config 文件（版本按 whisper.cpp tag）
+          # 头文件
+          if [ -f "whisper-src/whisper.h" ]; then
+            cp "whisper-src/whisper.h" "$DEPS_PREFIX/include/"
+          else
+            # 兜底：某些版本在 include/ 目录
+            find whisper-src -maxdepth 2 -name whisper.h -print -exec cp {} "$DEPS_PREFIX/include/" \;
+          fi
+
+          # 生成最小 pkg-config 文件
           cat > "$DEPS_PREFIX/lib/pkgconfig/whisper.pc" <<'EOF'
 prefix=@PREFIX@
 exec_prefix=${prefix}
@@ -142,9 +155,11 @@ Libs: -L${libdir} -lwhisper
 Cflags: -I${includedir}
 EOF
           sed -i "s|@PREFIX@|$DEPS_PREFIX|g" "$DEPS_PREFIX/lib/pkgconfig/whisper.pc"
-          sed -i "s|@VERSION@|${{ github.event.inputs.whisper-tag || 'v1.7.5' }}|g" "$DEPS_PREFIX/lib/pkgconfig/whisper.pc"
+          sed -i "s|@VERSION@|${WHISPER_TAG}|g" "$DEPS_PREFIX/lib/pkgconfig/whisper.pc"
 
+          # 让 FFmpeg 的 pkg-config 只看到目标架构依赖
           echo "PKG_CONFIG_PATH=$DEPS_PREFIX/lib/pkgconfig" >> $GITHUB_ENV
+          echo "PKG_CONFIG_LIBDIR=$DEPS_PREFIX/lib/pkgconfig" >> $GITHUB_ENV
 
       - name: Clean before configure
         working-directory: ffmpeg-src
@@ -164,19 +179,28 @@ EOF
           STRIP: ${{ env.STRIP }}
           NM: ${{ env.NM }}
           PKG_CONFIG_PATH: ${{ env.PKG_CONFIG_PATH }}
+          PKG_CONFIG_LIBDIR: ${{ env.PKG_CONFIG_LIBDIR }}
         run: |
+          set -euo pipefail
           mkdir -p ../android-build/${{ matrix.abi }}
+
+          # 针对 arm/arm64 开启 NEON
+          NEON_FLAG=""
+          if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "arm" ]; then
+            NEON_FLAG="--enable-neon"
+          fi
+
           ./configure \
-            --prefix=$PWD/../android-build/${{ matrix.abi }} \
+            --prefix="$PWD/../android-build/${{ matrix.abi }}" \
             --target-os=android \
-            --arch=$ARCH \
-            --cpu=$CPU \
-            --cross-prefix=$CROSS_PREFIX \
-            --cc=$CC \
-            --ar=$AR \
-            --ranlib=$RANLIB \
-            --strip=$STRIP \
-            --nm=$NM \
+            --arch="$ARCH" \
+            --cpu="$CPU" \
+            --cross-prefix="$CROSS_PREFIX" \
+            --cc="$CC" \
+            --ar="$AR" \
+            --ranlib="$RANLIB" \
+            --strip="$STRIP" \
+            --nm="$NM" \
             --enable-cross-compile \
             --enable-shared \
             --disable-static \
@@ -184,19 +208,19 @@ EOF
             --disable-programs \
             --enable-pic \
             --disable-debug \
-            $( [ "$ARCH" = "arm64" -o "$ARCH" = "arm" ] && echo "--enable-neon" ) \
+            $NEON_FLAG \
             --enable-whisper \
             --extra-ldflags="-Wl,-z,max-page-size=16384"
 
       - name: Build FFmpeg for ${{ matrix.abi }}
         working-directory: ffmpeg-src
         run: |
-          make -j$(nproc)
+          make -j"$(nproc)"
           make install
 
       - name: Copy config.h to output dir
         working-directory: ffmpeg-src
-        run: cp config.h ../android-build/${{ matrix.abi }}/config.h
+        run: cp config.h "../android-build/${{ matrix.abi }}/config.h"
 
       - name: Upload ${{ matrix.abi }} build artifact
         uses: actions/upload-artifact@v4
