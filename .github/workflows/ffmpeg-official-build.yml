@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       ffmpeg-tag:
-        description: "FFmpeg git tag (e.g. n7.1.1)"
+        description: "FFmpeg git tag (e.g. n8.0)"
         required: true
-        default: "n7.1.1"
+        default: "n8.0"
       ndk-version:
         description: "Android NDK version (e.g. r27)"
         required: true
@@ -45,7 +45,7 @@ jobs:
           git clone https://github.com/FFmpeg/FFmpeg ffmpeg-src
           cd ffmpeg-src
           git fetch --tags
-          git checkout ${{ github.event.inputs.ffmpeg-tag || 'n7.1.1' }}
+          git checkout ${{ github.event.inputs.ffmpeg-tag || 'n8.0' }}
 
       - name: Set up toolchain and env for ${{ matrix.abi }}
         run: |
@@ -57,29 +57,25 @@ jobs:
               export CPU=armv8-a
               export CROSS_PREFIX=$TOOLCHAIN/bin/aarch64-linux-android-
               export CC=$TOOLCHAIN/bin/aarch64-linux-android${API_LEVEL}-clang
-              export AR=$TOOLCHAIN/bin/llvm-ar
-              export RANLIB=$TOOLCHAIN/bin/llvm-ranlib
-              export STRIP=$TOOLCHAIN/bin/llvm-strip
               ;;
             armeabi-v7a)
               export ARCH=arm
               export CPU=armv7-a
               export CROSS_PREFIX=$TOOLCHAIN/bin/arm-linux-androideabi-
               export CC=$TOOLCHAIN/bin/armv7a-linux-androideabi${API_LEVEL}-clang
-              export AR=$TOOLCHAIN/bin/llvm-ar
-              export RANLIB=$TOOLCHAIN/bin/llvm-ranlib
-              export STRIP=$TOOLCHAIN/bin/llvm-strip
               ;;
             x86_64)
               export ARCH=x86_64
               export CPU=x86-64
               export CROSS_PREFIX=$TOOLCHAIN/bin/x86_64-linux-android-
               export CC=$TOOLCHAIN/bin/x86_64-linux-android${API_LEVEL}-clang
-              export AR=$TOOLCHAIN/bin/llvm-ar
-              export RANLIB=$TOOLCHAIN/bin/llvm-ranlib
-              export STRIP=$TOOLCHAIN/bin/llvm-strip
               ;;
           esac
+          export AR=$TOOLCHAIN/bin/llvm-ar
+          export RANLIB=$TOOLCHAIN/bin/llvm-ranlib
+          export STRIP=$TOOLCHAIN/bin/llvm-strip
+          export NM=$TOOLCHAIN/bin/llvm-nm
+
           echo "ARCH=$ARCH" >> $GITHUB_ENV
           echo "CPU=$CPU" >> $GITHUB_ENV
           echo "CROSS_PREFIX=$CROSS_PREFIX" >> $GITHUB_ENV
@@ -87,6 +83,7 @@ jobs:
           echo "AR=$AR" >> $GITHUB_ENV
           echo "RANLIB=$RANLIB" >> $GITHUB_ENV
           echo "STRIP=$STRIP" >> $GITHUB_ENV
+          echo "NM=$NM" >> $GITHUB_ENV
 
       - name: Clean before configure
         working-directory: ffmpeg-src
@@ -104,6 +101,7 @@ jobs:
           AR: ${{ env.AR }}
           RANLIB: ${{ env.RANLIB }}
           STRIP: ${{ env.STRIP }}
+          NM: ${{ env.NM }}
         run: |
           mkdir -p ../android-build/${{ matrix.abi }}
           ./configure \
@@ -116,6 +114,7 @@ jobs:
             --ar=$AR \
             --ranlib=$RANLIB \
             --strip=$STRIP \
+            --nm=$NM \
             --enable-cross-compile \
             --enable-shared \
             --disable-static \
@@ -123,8 +122,7 @@ jobs:
             --disable-programs \
             --enable-pic \
             --disable-debug \
-            --enable-neon \
-            --enable-whisper \
+            $( [ "$ARCH" = "arm64" -o "$ARCH" = "arm" ] && echo "--enable-neon" ) \
             --extra-ldflags="-Wl,-z,max-page-size=16384"
 
       - name: Build FFmpeg for ${{ matrix.abi }}
