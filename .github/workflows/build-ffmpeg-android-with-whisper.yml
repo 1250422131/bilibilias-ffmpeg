@@ -100,7 +100,7 @@ jobs:
           echo "NM=$TOOLCHAIN/bin/llvm-nm" >> $GITHUB_ENV
           echo "ANDROID_PLATFORM=android-${API_LEVEL}" >> $GITHUB_ENV
 
-      - name: Build and install whisper.cpp for ${{ matrix.abi }}
+      - name: Build and stage whisper.cpp for ${{ matrix.abi }}
         env:
           NDK: ${{ env.NDK }}
           ANDROID_ABI: ${{ env.ANDROID_ABI }}
@@ -116,29 +116,48 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI="$ANDROID_ABI" \
             -DANDROID_PLATFORM="$ANDROID_PLATFORM" \
+            -DBUILD_SHARED_LIBS=ON \
             -DWHISPER_BUILD_TESTS=OFF \
             -DWHISPER_BUILD_EXAMPLES=OFF \
-            -DWHISPER_BUILD_SHARED_LIB=OFF \
             -DCMAKE_BUILD_TYPE=Release
 
-          cmake --build "whisper-build-${{ matrix.abi }}" --target whisper -j"$(nproc)" || \
           cmake --build "whisper-build-${{ matrix.abi }}" -j"$(nproc)"
 
-          if [ -f "whisper-build-${{ matrix.abi }}/libwhisper.a" ]; then
-            cp "whisper-build-${{ matrix.abi }}/libwhisper.a" "$DEPS_PREFIX/lib/"
+          # 复制 libwhisper（优先共享库）
+          if [ -f "whisper-build-${{ matrix.abi }}/src/libwhisper.so" ]; then
+            cp "whisper-build-${{ matrix.abi }}/src/libwhisper.so" "$DEPS_PREFIX/lib/"
+            WHISPER_LIBTYPE=so
           elif [ -f "whisper-build-${{ matrix.abi }}/src/libwhisper.a" ]; then
             cp "whisper-build-${{ matrix.abi }}/src/libwhisper.a" "$DEPS_PREFIX/lib/"
+            WHISPER_LIBTYPE=a
+          elif [ -f "whisper-build-${{ matrix.abi }}/libwhisper.so" ]; then
+            cp "whisper-build-${{ matrix.abi }}/libwhisper.so" "$DEPS_PREFIX/lib/"
+            WHISPER_LIBTYPE=so
+          elif [ -f "whisper-build-${{ matrix.abi }}/libwhisper.a" ]; then
+            cp "whisper-build-${{ matrix.abi }}/libwhisper.a" "$DEPS_PREFIX/lib/"
+            WHISPER_LIBTYPE=a
           else
-            echo "libwhisper.a not found"; ls -R "whisper-build-${{ matrix.abi }}"; exit 1
+            echo "libwhisper.(so|a) not found"; ls -R "whisper-build-${{ matrix.abi }}"; exit 1
           fi
 
+          # 复制 ggml 运行时依赖（共享库优先）
+          if compgen -G "whisper-build-${{ matrix.abi }}/ggml/src/libggml*.so" > /dev/null; then
+            cp whisper-build-${{ matrix.abi }}/ggml/src/libggml*.so "$DEPS_PREFIX/lib/" || true
+          elif compgen -G "whisper-build-${{ matrix.abi }}/ggml/src/libggml*.a" > /dev/null; then
+            cp whisper-build-${{ matrix.abi }}/ggml/src/libggml*.a "$DEPS_PREFIX/lib/" || true
+          fi
+
+          # 头文件
           if [ -f "whisper-src/whisper.h" ]; then
             cp "whisper-src/whisper.h" "$DEPS_PREFIX/include/"
           else
             find whisper-src -maxdepth 2 -name whisper.h -print -exec cp {} "$DEPS_PREFIX/include/" \;
           fi
 
-          # 用 sed 去掉 YAML 必要缩进，避免 .pc 文件带前导空格
+          # 生成 pkg-config（Version 去掉开头的 v/V）
+          WHISPER_VER="$(printf '%s' "${WHISPER_TAG}" | sed 's/^[vV]//')"
+
+          # 用 sed 去掉 YAML 缩进
           sed 's/^[[:space:]]*//' <<'EOF' > "$DEPS_PREFIX/lib/pkgconfig/whisper.pc"
             prefix=@PREFIX@
             exec_prefix=${prefix}
@@ -148,12 +167,13 @@ jobs:
             Name: whisper
             Description: Whisper inference library
             Version: @VERSION@
-            Libs: -L${libdir} -lwhisper
+            Libs: -L${libdir} -lwhisper -Wl,-rpath-link,${libdir}
+            Libs.private: -lggml -lggml-cpu -lggml-base
             Cflags: -I${includedir}
           EOF
 
           sed -i "s|@PREFIX@|$DEPS_PREFIX|g" "$DEPS_PREFIX/lib/pkgconfig/whisper.pc"
-          sed -i "s|@VERSION@|${WHISPER_TAG}|g" "$DEPS_PREFIX/lib/pkgconfig/whisper.pc"
+          sed -i "s|@VERSION@|$WHISPER_VER|g" "$DEPS_PREFIX/lib/pkgconfig/whisper.pc"
 
           echo "PKG_CONFIG_PATH=$DEPS_PREFIX/lib/pkgconfig" >> $GITHUB_ENV
           echo "PKG_CONFIG_LIBDIR=$DEPS_PREFIX/lib/pkgconfig" >> $GITHUB_ENV
