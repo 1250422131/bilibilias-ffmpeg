@@ -30,8 +30,9 @@ jobs:
           sudo dpkg --add-architecture i386
           sudo apt-get update
           sudo apt-get install -y \
-            git wget unzip build-essential pkg-config yasm \
+            git wget unzip build-essential pkg-config yasm nasm \
             libc6:i386 libstdc++6:i386 lib32z1 gcc-multilib g++-multilib
+          nasm -v
 
       - name: Download Android NDK
         run: |
