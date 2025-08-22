@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        abi: [arm64-v8a]  # 先只测试一个架构
+        abi: [arm64-v8a, armeabi-v7a, x86_64]
     env:
       API_LEVEL: 34
       FFMPEG_TAG: ${{ inputs.ffmpeg-tag || 'n8.0' }}
@@ -40,7 +40,6 @@ jobs:
             git wget unzip build-essential pkg-config yasm nasm cmake ninja-build \
             libc6:i386 libstdc++6:i386 lib32z1 gcc-multilib g++-multilib
           nasm -v
-          pkg-config --version
 
       - name: Download Android NDK
         run: |
@@ -63,12 +62,32 @@ jobs:
         run: |
           NDK="$PWD/android-ndk-${ANDROID_NDK_VERSION}"
           TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
-          ARCH=arm64
-          CPU=armv8-a
-          ANDROID_ABI=arm64-v8a
-          CROSS_PREFIX="$TOOLCHAIN/bin/aarch64-linux-android-"
-          CC="$TOOLCHAIN/bin/aarch64-linux-android${API_LEVEL}-clang"
-          CXX="$TOOLCHAIN/bin/aarch64-linux-android${API_LEVEL}-clang++"
+          case "${{ matrix.abi }}" in
+            arm64-v8a)
+              ARCH=arm64
+              CPU=armv8-a
+              ANDROID_ABI=arm64-v8a
+              CROSS_PREFIX="$TOOLCHAIN/bin/aarch64-linux-android-"
+              CC="$TOOLCHAIN/bin/aarch64-linux-android${API_LEVEL}-clang"
+              CXX="$TOOLCHAIN/bin/aarch64-linux-android${API_LEVEL}-clang++"
+              ;;
+            armeabi-v7a)
+              ARCH=arm
+              CPU=armv7-a
+              ANDROID_ABI=armeabi-v7a
+              CROSS_PREFIX="$TOOLCHAIN/bin/arm-linux-androideabi-"
+              CC="$TOOLCHAIN/bin/armv7a-linux-androideabi${API_LEVEL}-clang"
+              CXX="$TOOLCHAIN/bin/armv7a-linux-androideabi${API_LEVEL}-clang++"
+              ;;
+            x86_64)
+              ARCH=x86_64
+              CPU=x86-64
+              ANDROID_ABI=x86_64
+              CROSS_PREFIX="$TOOLCHAIN/bin/x86_64-linux-android-"
+              CC="$TOOLCHAIN/bin/x86_64-linux-android${API_LEVEL}-clang"
+              CXX="$TOOLCHAIN/bin/x86_64-linux-android${API_LEVEL}-clang++"
+              ;;
+          esac
 
           echo "ARCH=$ARCH" >> $GITHUB_ENV
           echo "CPU=$CPU" >> $GITHUB_ENV
@@ -113,7 +132,7 @@ jobs:
 
           find "whisper-build-${{ matrix.abi }}" -name "libggml*.so" -exec cp {} "$DEPS_PREFIX/lib/" \; || true
 
-          # 复制头文件
+          # 复制头文件 - whisper.h
           if [ -f "whisper-src/include/whisper.h" ]; then
             cp "whisper-src/include/whisper.h" "$DEPS_PREFIX/include/"
           elif [ -f "whisper-src/whisper.h" ]; then
@@ -123,6 +142,20 @@ jobs:
             find whisper-src -name "whisper.h" -type f
             find whisper-src -name "whisper.h" -type f -exec cp {} "$DEPS_PREFIX/include/" \;
           fi
+
+          # 复制头文件 - ggml.h (whisper.h 依赖)
+          if [ -f "whisper-src/ggml/include/ggml.h" ]; then
+            cp "whisper-src/ggml/include/ggml.h" "$DEPS_PREFIX/include/"
+          elif [ -f "whisper-src/ggml.h" ]; then
+            cp "whisper-src/ggml.h" "$DEPS_PREFIX/include/"
+          else
+            echo "Finding ggml.h..."
+            find whisper-src -name "ggml.h" -type f
+            find whisper-src -name "ggml.h" -type f -exec cp {} "$DEPS_PREFIX/include/" \;
+          fi
+
+          # 复制其他可能需要的 ggml 头文件
+          find whisper-src -name "ggml*.h" -type f -exec cp {} "$DEPS_PREFIX/include/" \; || true
 
           echo "DEPS_PREFIX=$DEPS_PREFIX" >> $GITHUB_ENV
 
@@ -142,54 +175,20 @@ jobs:
           echo "Libs: -L\${libdir} -lwhisper" >> "$PC_FILE"
           echo "Cflags: -I\${includedir}" >> "$PC_FILE"
 
-      - name: Debug and verify pkg-config setup
+      - name: Verify setup
         run: |
-          echo "=== Environment ==="
-          echo "DEPS_PREFIX: $DEPS_PREFIX"
-          echo "WHISPER_TAG: $WHISPER_TAG"
-          echo "WHISPER_VER: ${WHISPER_TAG#v}"
+          export PKG_CONFIG_PATH="$DEPS_PREFIX/lib/pkgconfig"
+          export PKG_CONFIG_LIBDIR="$DEPS_PREFIX/lib/pkgconfig"
           
           echo "=== Files in deps ==="
           find "$DEPS_PREFIX" -type f | sort
           
-          echo "=== whisper.pc content ==="
-          cat "$DEPS_PREFIX/lib/pkgconfig/whisper.pc"
+          echo "=== Header files ==="
+          ls -la "$DEPS_PREFIX/include/"
           
-          echo "=== PKG_CONFIG tests ==="
-          export PKG_CONFIG_PATH="$DEPS_PREFIX/lib/pkgconfig"
-          export PKG_CONFIG_LIBDIR="$DEPS_PREFIX/lib/pkgconfig"
-          
-          echo "PKG_CONFIG_PATH: $PKG_CONFIG_PATH"
-          echo "PKG_CONFIG_LIBDIR: $PKG_CONFIG_LIBDIR"
-          
-          # 基础测试
-          pkg-config --list-all | grep whisper || echo "whisper not found in list-all"
-          
-          # 版本测试
-          echo "modversion result:"
-          pkg-config --modversion whisper || echo "modversion failed"
-          
-          # 存在性测试
-          echo "exists test:"
-          if pkg-config --exists whisper; then
-            echo "whisper exists: YES"
-          else
-            echo "whisper exists: NO"
-          fi
-          
-          # 版本比较测试
-          echo "version comparison test:"
-          if pkg-config --exists 'whisper >= 1.7.5'; then
-            echo "whisper >= 1.7.5: YES"
-          else
-            echo "whisper >= 1.7.5: NO"
-          fi
-          
-          # 获取编译参数
-          echo "cflags:"
-          pkg-config --cflags whisper || echo "cflags failed"
-          echo "libs:"
-          pkg-config --libs whisper || echo "libs failed"
+          echo "=== pkg-config test ==="
+          pkg-config --modversion whisper
+          pkg-config --exists 'whisper >= 1.7.5' && echo "Version check PASS" || echo "Version check FAIL"
 
       - name: Clean before configure
         working-directory: ffmpeg-src
@@ -205,19 +204,13 @@ jobs:
           export PKG_CONFIG_PATH="$DEPS_PREFIX/lib/pkgconfig"
           export PKG_CONFIG_LIBDIR="$DEPS_PREFIX/lib/pkgconfig"
           
-          echo "=== Pre-configure debug ==="
-          echo "PKG_CONFIG_PATH: $PKG_CONFIG_PATH"
-          echo "PKG_CONFIG_LIBDIR: $PKG_CONFIG_LIBDIR"
-          echo "pkg-config location: $(which pkg-config)"
-          
-          # 在 FFmpeg configure 环境下测试 pkg-config
-          echo "Testing pkg-config in configure environment:"
-          pkg-config --exists whisper && echo "whisper found" || echo "whisper NOT found"
-          pkg-config --modversion whisper || echo "modversion failed"
-          
           mkdir -p ../android-build/${{ matrix.abi }}
 
-          echo "=== Starting FFmpeg configure ==="
+          NEON_FLAG=""
+          if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "arm" ]; then
+            NEON_FLAG="--enable-neon"
+          fi
+
           ./configure \
             --prefix="$PWD/../android-build/${{ matrix.abi }}" \
             --target-os=android \
@@ -237,27 +230,19 @@ jobs:
             --disable-programs \
             --enable-pic \
             --disable-debug \
-            --enable-neon \
+            $NEON_FLAG \
             --enable-whisper \
-            --extra-ldflags="-Wl,-z,max-page-size=16384" || {
-              echo "=== Configure failed! Debugging... ==="
-              echo "=== config.log relevant sections ==="
-              if [ -f ffbuild/config.log ]; then
-                echo "--- Checking for whisper in config.log ---"
-                grep -n -A 10 -B 5 "whisper" ffbuild/config.log || echo "No whisper mentions found"
-                echo "--- Checking for pkg-config errors ---"
-                grep -n -A 5 -B 5 "pkg.config\|pkg_config" ffbuild/config.log || echo "No pkg-config mentions found"
-              else
-                echo "config.log not found"
-              fi
-              exit 1
-            }
+            --extra-ldflags="-Wl,-z,max-page-size=16384"
 
       - name: Build FFmpeg for ${{ matrix.abi }}
         working-directory: ffmpeg-src
         run: |
           make -j"$(nproc)"
           make install
+
+      - name: Copy config.h to output dir
+        working-directory: ffmpeg-src
+        run: cp config.h "../android-build/${{ matrix.abi }}/config.h"
 
       - name: Upload ${{ matrix.abi }} build artifact
         uses: actions/upload-artifact@v4
