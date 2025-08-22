@@ -37,8 +37,9 @@ jobs:
           sudo dpkg --add-architecture i386
           sudo apt-get update
           sudo apt-get install -y \
-            git wget unzip build-essential pkg-config yasm cmake ninja-build \
+            git wget unzip build-essential pkg-config yasm nasm cmake ninja-build \
             libc6:i386 libstdc++6:i386 lib32z1 gcc-multilib g++-multilib
+          nasm -v
 
       - name: Download Android NDK
         run: |
@@ -154,10 +155,9 @@ jobs:
             find whisper-src -maxdepth 2 -name whisper.h -print -exec cp {} "$DEPS_PREFIX/include/" \;
           fi
 
-          # 生成 pkg-config（Version 去掉开头的 v/V）
+          # 生成 pkg-config（Version 去掉开头的 v/V；加入 -lc++_shared 以满足 C++ 运行库）
           WHISPER_VER="$(printf '%s' "${WHISPER_TAG}" | sed 's/^[vV]//')"
 
-          # 用 sed 去掉 YAML 缩进
           sed 's/^[[:space:]]*//' <<'EOF' > "$DEPS_PREFIX/lib/pkgconfig/whisper.pc"
             prefix=@PREFIX@
             exec_prefix=${prefix}
@@ -167,8 +167,8 @@ jobs:
             Name: whisper
             Description: Whisper inference library
             Version: @VERSION@
-            Libs: -L${libdir} -lwhisper -Wl,-rpath-link,${libdir}
-            Libs.private: -lggml -lggml-cpu -lggml-base
+            Libs: -L${libdir} -lwhisper -lggml -lggml-cpu -lggml-base -lc++_shared -Wl,-rpath-link,${libdir}
+            Libs.private: -llog -lm -latomic
             Cflags: -I${includedir}
           EOF
 
@@ -177,6 +177,29 @@ jobs:
 
           echo "PKG_CONFIG_PATH=$DEPS_PREFIX/lib/pkgconfig" >> $GITHUB_ENV
           echo "PKG_CONFIG_LIBDIR=$DEPS_PREFIX/lib/pkgconfig" >> $GITHUB_ENV
+
+      - name: Verify whisper pkg-config for ${{ matrix.abi }}
+        env:
+          PKG_CONFIG_PATH: ${{ env.PKG_CONFIG_PATH }}
+          PKG_CONFIG_LIBDIR: ${{ env.PKG_CONFIG_LIBDIR }}
+        run: |
+          set -e
+          echo "PKG_CONFIG=$(command -v pkg-config)"
+          echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH"
+          echo "PKG_CONFIG_LIBDIR=$PKG_CONFIG_LIBDIR"
+          ls -la "$PKG_CONFIG_PATH"
+          echo "---- whisper.pc ----"
+          cat "$PKG_CONFIG_PATH/whisper.pc" || true
+          echo "---- pkg-config checks ----"
+          pkg-config --version
+          pkg-config --modversion whisper || true
+          if pkg-config --exists 'whisper >= 1.7.5'; then
+            echo "pkg-config exists check OK"
+          else
+            echo "pkg-config exists check FAILED"; exit 2
+          fi
+          echo "CFLAGS: $(pkg-config --cflags whisper)"
+          echo "LIBS:   $(pkg-config --libs whisper)"
 
       - name: Clean before configure
         working-directory: ffmpeg-src
@@ -217,6 +240,7 @@ jobs:
             --ranlib="$RANLIB" \
             --strip="$STRIP" \
             --nm="$NM" \
+            --pkg-config="$(command -v pkg-config)" \
             --enable-cross-compile \
             --enable-shared \
             --disable-static \
