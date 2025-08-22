@@ -124,6 +124,7 @@ jobs:
             --enable-pic \
             --disable-debug \
             --enable-neon \
+            --enable-whisper \
             --extra-ldflags="-Wl,-z,max-page-size=16384"
 
       - name: Build FFmpeg for ${{ matrix.abi }}
