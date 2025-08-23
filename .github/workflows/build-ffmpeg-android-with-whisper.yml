@@ -270,37 +270,34 @@ jobs:
           OUT_INC="$PWD/../android-build/${{ matrix.abi }}/include"
           mkdir -p "$OUT_LIB" "$OUT_INC"
 
-          # 1) Rename main -> ffmpeg_main in fftools/ffmpeg.o
-          cp fftools/ffmpeg.o fftools/ffmpeg_main.o
-          "$OBJCOPY" --redefine-sym main=ffmpeg_main fftools/ffmpeg_main.o
+          # 让 pkg-config 能找到 whisper
+          export PKG_CONFIG_PATH="$DEPS_PREFIX/lib/pkgconfig"
+          export PKG_CONFIG_LIBDIR="$DEPS_PREFIX/lib/pkgconfig"
 
-          # 2) Collect fftools objects (exclude ffplay/ffprobe/original ffmpeg.o)
+          # 收集所有 fftools/*.o（不排除 ffmpeg.o，直接用即可）
           mapfile -t FFOBJS < <(find fftools -type f -name '*.o' \
-            ! -name 'ffplay*' ! -name 'ffprobe*' ! -name 'ffmpeg.o' | sort)
-          FFOBJS=("fftools/ffmpeg_main.o" "${FFOBJS[@]}")
+            ! -name 'ffplay*' ! -name 'ffprobe*' | sort)
 
           echo "Linking libffmpeg_entry.so with objects:"
           printf '  %s\n' "${FFOBJS[@]}"
 
-          # 3) Link shared library with all deps
+          # 链接共享库，允许重复符号
           "$CC" -shared -o "$OUT_LIB/libffmpeg_entry.so" \
             "${FFOBJS[@]}" \
             -L"$OUT_LIB" \
             -lavfilter -lavformat -lavdevice -lswscale -lavcodec -lswresample -lavutil \
             $(pkg-config --libs whisper) \
             -lm -lz -llog \
-            -Wl,-z,max-page-size=16384
+            -Wl,-z,max-page-size=16384 \
+            -Wl,--allow-multiple-definition
 
-          # 4) Header for JNI call
+          # 生成头文件
           cat > "$OUT_INC/ffmpeg_entry.h" <<'EOF'
           #ifndef FFMPEG_ENTRY_H
           #define FFMPEG_ENTRY_H
           #ifdef __cplusplus
           extern "C" {
           #endif
-          // Example:
-          //   const char* argv[] = {"ffmpeg", "-nostdin", "-h", 0};
-          //   int ret = ffmpeg_main(3, (char**)argv);
           int ffmpeg_main(int argc, char **argv);
           #ifdef __cplusplus
           }
