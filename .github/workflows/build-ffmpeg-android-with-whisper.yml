@@ -159,12 +159,14 @@ jobs:
             echo "Name: whisper"
             echo "Description: Whisper inference library"
             echo "Version: $WHISPER_VER"
-            echo "Libs: -L\${libdir} -lwhisper"
+            # 仅一行 Libs
+            printf "Libs: -L\${libdir} -lwhisper"
             for f in "$DEPS_PREFIX"/lib/libggml*.so; do
               [ -e "$f" ] || continue
               libname=$(basename "$f" .so)
-              echo "Libs: -l${libname#lib}"
+              printf " -l${libname#lib}"
             done
+            echo ""
             echo "Cflags: -I\${includedir}"
           } > "$PC_FILE"
 
