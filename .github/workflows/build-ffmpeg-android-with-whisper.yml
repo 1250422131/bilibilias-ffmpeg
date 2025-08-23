@@ -27,7 +27,7 @@ jobs:
       API_LEVEL: 34
       FFMPEG_TAG: ${{ inputs.ffmpeg-tag || 'n8.0' }}
       ANDROID_NDK_VERSION: ${{ inputs.ndk-version || 'r27' }}
-      WHISPER_TAG: ${{ inputs.whisper-tag || 'v1.7.5' }}
+      WHISPER_TAG: ${{ inputs.whisper-tag || 'v1.7.6' }}
     steps:
       - name: Checkout workflow files
         uses: actions/checkout@v4
