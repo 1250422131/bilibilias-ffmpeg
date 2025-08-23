@@ -272,7 +272,7 @@ jobs:
 
           # 1) Rename main -> ffmpeg_main in fftools/ffmpeg.o
           cp fftools/ffmpeg.o fftools/ffmpeg_main.o
-          "$OBJCOPY" --redefine-symbol main=ffmpeg_main fftools/ffmpeg_main.o
+          "$OBJCOPY" --redefine-sym main=ffmpeg_main fftools/ffmpeg_main.o
 
           # 2) Collect fftools objects (exclude ffplay/ffprobe/original ffmpeg.o)
           mapfile -t FFOBJS < <(find fftools -type f -name '*.o' \
