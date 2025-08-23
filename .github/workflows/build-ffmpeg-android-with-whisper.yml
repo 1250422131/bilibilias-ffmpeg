@@ -232,17 +232,13 @@ jobs:
           EOF
           echo "ffmpeg_delegate.c generated."
 
-      - name: Compile all needed fftools sources (auto, safe)
+      - name: Compile all needed fftools sources (auto, modular CLI safe)
         working-directory: ffmpeg-src
         run: |
           cd fftools
           for src in *.c; do
-            # 跳过 ffplay、ffprobe、ffplay_renderer 及其它以 ffplay 开头的文件
-            [[ "$src" == "ffplay.c" || "$src" == "ffprobe.c" || "$src" == ffplay_* ]] && continue
-            if grep -q '^#.*include *<stdbit.h>' "$src"; then
-              echo "[warn] skip $src (contains stdbit.h)"
-              continue
-            fi
+            # 跳过 ffplay、ffprobe 及 ffplay 相关
+            [[ "$src" == ffplay* || "$src" == "ffprobe.c" ]] && continue
             if [[ "$src" == "ffmpeg.c" ]]; then
               $CC -fPIC -Dmain=ffmpeg_real_main -I.. -I. -c "$src" -o "${src%.c}.o"
             else
