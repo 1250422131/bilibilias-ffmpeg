@@ -115,7 +115,6 @@ jobs:
             -DWHISPER_BUILD_EXAMPLES=OFF \
             -DCMAKE_BUILD_TYPE=Release
           cmake --build "whisper-build-${{ matrix.abi }}" -j"$(nproc)"
-          # 复制库
           if [ -f "whisper-build-${{ matrix.abi }}/src/libwhisper.so" ]; then
             cp "whisper-build-${{ matrix.abi }}/src/libwhisper.so" "$DEPS_PREFIX/lib/"
           elif [ -f "whisper-build-${{ matrix.abi }}/libwhisper.so" ]; then
@@ -125,9 +124,7 @@ jobs:
             find "whisper-build-${{ matrix.abi }}" -name "*.so" -type f
             exit 1
           fi
-          # 复制 libggml.so
           find "whisper-build-${{ matrix.abi }}" -name "libggml*.so" -exec cp {} "$DEPS_PREFIX/lib/" \; || true
-          # 复制头文件
           if [ -f "whisper-src/include/whisper.h" ]; then
             cp "whisper-src/include/whisper.h" "$DEPS_PREFIX/include/"
           elif [ -f "whisper-src/whisper.h" ]; then
@@ -238,15 +235,14 @@ jobs:
       - name: Compile ffmpeg.c and ffmpeg_delegate.c for ${{ matrix.abi }}
         working-directory: ffmpeg-src
         run: |
-          # 编译 ffmpeg.c，重命名 main
-          $CC -Dmain=ffmpeg_real_main -I. -Ifftools -c fftools/ffmpeg.c -o fftools/ffmpeg.o
+          # 编译 ffmpeg.c，重命名 main 并加 -fPIC
+          $CC -fPIC -Dmain=ffmpeg_real_main -I. -Ifftools -c fftools/ffmpeg.c -o fftools/ffmpeg.o
           # 编译 delegate
-          $CC -I. -Ifftools -c fftools/ffmpeg_delegate.c -o fftools/ffmpeg_delegate.o
+          $CC -fPIC -I. -Ifftools -c fftools/ffmpeg_delegate.c -o fftools/ffmpeg_delegate.o
 
       - name: Collect all necessary fftools object files
         working-directory: ffmpeg-src
         run: |
-          # 只收集 ffmpeg 相关对象，不包括 ffplay/ffprobe
           OBJ_FILES=$(find fftools -maxdepth 1 -type f -name '*.o' ! -name 'ffplay*' ! -name 'ffprobe*')
           echo "$OBJ_FILES" > fftools/ffmpeg_objs.list
 
