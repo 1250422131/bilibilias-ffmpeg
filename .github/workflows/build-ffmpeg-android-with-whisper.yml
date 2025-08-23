@@ -12,9 +12,9 @@ on:
         required: true
         default: "r27"
       whisper-tag:
-        description: "whisper.cpp tag (>= v1.7.5)"
+        description: "whisper.cpp tag (>= v1.7.6)"
         required: true
-        default: "v1.7.5"
+        default: "v1.7.6"
 
 jobs:
   build:
