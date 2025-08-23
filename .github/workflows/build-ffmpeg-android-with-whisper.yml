@@ -16,6 +16,10 @@ on:
         required: true
         default: "v1.7.6"
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   build:
     runs-on: ubuntu-22.04
@@ -28,12 +32,14 @@ jobs:
       FFMPEG_TAG: ${{ inputs.ffmpeg-tag || 'n8.0' }}
       ANDROID_NDK_VERSION: ${{ inputs.ndk-version || 'r27' }}
       WHISPER_TAG: ${{ inputs.whisper-tag || 'v1.7.6' }}
+
     steps:
       - name: Checkout workflow files
         uses: actions/checkout@v4
 
       - name: Install dependencies
         run: |
+          set -e
           sudo dpkg --add-architecture i386
           sudo apt-get update
           sudo apt-get install -y \
@@ -43,12 +49,14 @@ jobs:
 
       - name: Download Android NDK
         run: |
-          wget -q https://dl.google.com/android/repository/android-ndk-${ANDROID_NDK_VERSION}-linux.zip
-          unzip -q -o android-ndk-${ANDROID_NDK_VERSION}-linux.zip
-          echo "NDK=$PWD/android-ndk-${ANDROID_NDK_VERSION}" >> $GITHUB_ENV
+          set -e
+          wget -q "https://dl.google.com/android/repository/android-ndk-${ANDROID_NDK_VERSION}-linux.zip"
+          unzip -q -o "android-ndk-${ANDROID_NDK_VERSION}-linux.zip"
+          echo "NDK=$PWD/android-ndk-${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
 
       - name: Clone FFmpeg
         run: |
+          set -e
           git clone https://github.com/FFmpeg/FFmpeg ffmpeg-src
           cd ffmpeg-src
           git fetch --tags
@@ -56,12 +64,15 @@ jobs:
 
       - name: Clone whisper.cpp
         run: |
+          set -e
           git clone --depth=1 -b "${WHISPER_TAG}" https://github.com/ggerganov/whisper.cpp whisper-src
 
       - name: Set up toolchain and env for ${{ matrix.abi }}
         run: |
+          set -e
           NDK="$PWD/android-ndk-${ANDROID_NDK_VERSION}"
           TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
+
           case "${{ matrix.abi }}" in
             arm64-v8a)
               ARCH=arm64
@@ -88,18 +99,21 @@ jobs:
               CXX="$TOOLCHAIN/bin/x86_64-linux-android${API_LEVEL}-clang++"
               ;;
           esac
-          echo "ARCH=$ARCH" >> $GITHUB_ENV
-          echo "CPU=$CPU" >> $GITHUB_ENV
-          echo "ANDROID_ABI=$ANDROID_ABI" >> $GITHUB_ENV
-          echo "CROSS_PREFIX=$CROSS_PREFIX" >> $GITHUB_ENV
-          echo "CC=$CC" >> $GITHUB_ENV
-          echo "CXX=$CXX" >> $GITHUB_ENV
-          echo "AR=$TOOLCHAIN/bin/llvm-ar" >> $GITHUB_ENV
-          echo "RANLIB=$TOOLCHAIN/bin/llvm-ranlib" >> $GITHUB_ENV
-          echo "STRIP=$TOOLCHAIN/bin/llvm-strip" >> $GITHUB_ENV
-          echo "NM=$TOOLCHAIN/bin/llvm-nm" >> $GITHUB_ENV
-          echo "OBJCOPY=$TOOLCHAIN/bin/llvm-objcopy" >> $GITHUB_ENV
-          echo "ANDROID_PLATFORM=android-${API_LEVEL}" >> $GITHUB_ENV
+
+          {
+            echo "ARCH=$ARCH"
+            echo "CPU=$CPU"
+            echo "ANDROID_ABI=$ANDROID_ABI"
+            echo "CROSS_PREFIX=$CROSS_PREFIX"
+            echo "CC=$CC"
+            echo "CXX=$CXX"
+            echo "AR=$TOOLCHAIN/bin/llvm-ar"
+            echo "RANLIB=$TOOLCHAIN/bin/llvm-ranlib"
+            echo "STRIP=$TOOLCHAIN/bin/llvm-strip"
+            echo "NM=$TOOLCHAIN/bin/llvm-nm"
+            echo "OBJCOPY=$TOOLCHAIN/bin/llvm-objcopy"
+            echo "ANDROID_PLATFORM=android-${API_LEVEL}"
+          } >> "$GITHUB_ENV"
 
       - name: Build whisper.cpp for ${{ matrix.abi }}
         run: |
@@ -130,7 +144,7 @@ jobs:
             exit 1
           fi
 
-          # Copy ggml-related shared libs (names vary by ggml version)
+          # Copy ggml-related shared libs
           find "whisper-build-${{ matrix.abi }}" -maxdepth 3 -type f -name "libggml*.so" -exec cp -v {} "$DEPS_PREFIX/lib/" \; || true
 
           # Headers
@@ -152,7 +166,7 @@ jobs:
 
           find whisper-src -name "ggml*.h" -type f -exec cp {} "$DEPS_PREFIX/include/" \; || true
 
-          echo "DEPS_PREFIX=$DEPS_PREFIX" >> $GITHUB_ENV
+          echo "DEPS_PREFIX=$DEPS_PREFIX" >> "$GITHUB_ENV"
 
       - name: Create whisper.pc (include ggml libs)
         run: |
@@ -187,6 +201,7 @@ jobs:
 
       - name: Verify whisper pkg-config
         run: |
+          set -e
           export PKG_CONFIG_PATH="$DEPS_PREFIX/lib/pkgconfig"
           export PKG_CONFIG_LIBDIR="$DEPS_PREFIX/lib/pkgconfig"
           echo "pkg-config --cflags whisper:"
@@ -199,6 +214,7 @@ jobs:
       - name: Clean FFmpeg tree
         working-directory: ffmpeg-src
         run: |
+          set -e
           make distclean || true
           git clean -xdf || true
 
@@ -208,7 +224,7 @@ jobs:
           set -euo pipefail
           export PKG_CONFIG_PATH="$DEPS_PREFIX/lib/pkgconfig"
           export PKG_CONFIG_LIBDIR="$DEPS_PREFIX/lib/pkgconfig"
-          mkdir -p ../android-build/${{ matrix.abi }}
+          mkdir -p "../android-build/${{ matrix.abi }}"
 
           NEON_FLAG=""
           if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "arm" ]; then
@@ -242,6 +258,7 @@ jobs:
       - name: Build FFmpeg for ${{ matrix.abi }}
         working-directory: ffmpeg-src
         run: |
+          set -e
           make -j"$(nproc)"
           make install
 
@@ -297,6 +314,7 @@ EOF
 
       - name: Show outputs
         run: |
+          set -e
           echo "=== Installed files for ${{ matrix.abi }} ==="
           find "android-build/${{ matrix.abi }}" -type f | sort
 
