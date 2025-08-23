@@ -227,11 +227,8 @@ jobs:
             --enable-shared \
             --disable-static \
             --disable-doc \
-            --enable-programs \
-            --enable-ffmpeg \
             --disable-ffprobe \
             --disable-ffplay \
-            --enable-whisper \
             --enable-pic \
             --disable-debug \
             $NEON_FLAG \
