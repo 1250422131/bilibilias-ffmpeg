@@ -237,7 +237,8 @@ jobs:
         run: |
           cd fftools
           for src in *.c; do
-            [[ "$src" == "ffplay.c" || "$src" == "ffprobe.c" ]] && continue
+            # 跳过 ffplay、ffprobe、ffplay_renderer 及其它以 ffplay 开头的文件
+            [[ "$src" == "ffplay.c" || "$src" == "ffprobe.c" || "$src" == ffplay_* ]] && continue
             if grep -q '^#.*include *<stdbit.h>' "$src"; then
               echo "[warn] skip $src (contains stdbit.h)"
               continue
