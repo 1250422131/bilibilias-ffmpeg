@@ -143,7 +143,7 @@ jobs:
             find "whisper-build-${{ matrix.abi }}" -name "*.so" -type f
             exit 1
           fi
-          find "whisper-build-${{ matrix.abi }}" -name "libggml*.so" -exec cp "$DEPS_PREFIX/lib/" \; || true
+          find "whisper-build-${{ matrix.abi }}" -maxdepth 3 -type f -name "libggml*.so" -exec cp {} "$DEPS_PREFIX/lib/" \; || true
 
           # 复制头文件
           if [ -f "whisper-src/include/whisper.h" ]; then
@@ -168,17 +168,23 @@ jobs:
         run: |
           WHISPER_VER="${WHISPER_TAG#v}"
           PC_FILE="$DEPS_PREFIX/lib/pkgconfig/whisper.pc"
-          cat > "$PC_FILE" <<EOF
-          prefix=$DEPS_PREFIX
-          exec_prefix=\${prefix}
-          libdir=\${prefix}/lib
-          includedir=\${prefix}/include
-          Name: whisper
-          Description: Whisper inference library
-          Version: $WHISPER_VER
-          Libs: -L\${libdir} -lwhisper
-          Cflags: -I\${includedir}
-          EOF
+          {
+            echo "prefix=$DEPS_PREFIX"
+            echo "exec_prefix=\${prefix}"
+            echo "libdir=\${prefix}/lib"
+            echo "includedir=\${prefix}/include"
+            echo ""
+            echo "Name: whisper"
+            echo "Description: Whisper inference library"
+            echo "Version: $WHISPER_VER"
+            echo "Libs: -L\${libdir} -lwhisper"
+            for f in "$DEPS_PREFIX"/lib/libggml*.so; do
+              [ -e "$f" ] || continue
+              libname=$(basename "$f" .so)
+              echo "Libs: -l${libname#lib}"
+            done
+            echo "Cflags: -I\${includedir}"
+          } > "$PC_FILE"
 
       - name: Clean FFmpeg tree
         working-directory: ffmpeg-src
@@ -199,6 +205,9 @@ jobs:
           if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "arm" ]; then
             NEON_FLAG="--enable-neon"
           fi
+
+          # 收集全部 ggml 库，避免 undefined reference
+          GGML_LIBS=$(find "$DEPS_PREFIX/lib" -name 'libggml*.so' -printf "-l%f " | sed 's/-llib/-l/g; s/\.so//g')
 
           ./configure \
             --prefix="../android-build/${{ matrix.abi }}" \
@@ -222,8 +231,8 @@ jobs:
             --disable-debug \
             --enable-whisper \
             $NEON_FLAG \
-            --extra-libs="$(pkg-config --libs whisper)" \
-            --extra-ldflags="-Wl,-z,max-page-size=16384"
+            --extra-libs="$(pkg-config --libs whisper) $GGML_LIBS" \
+            --extra-ldflags="-Wl,-z,max-page-size=16384 -Wl,--allow-shlib-undefined"
 
       - name: Build FFmpeg for ${{ matrix.abi }}
         working-directory: ffmpeg-src
@@ -232,7 +241,7 @@ jobs:
           make -j"$(nproc)"
           make install
 
-      - name: Build libffmpeg_entry.so
+      - name: Build libffmpeg_entry.so (export ffmpeg_main)
         working-directory: ffmpeg-src
         run: |
           set -euo pipefail
@@ -243,7 +252,6 @@ jobs:
           export PKG_CONFIG_PATH="$DEPS_PREFIX/lib/pkgconfig"
           export PKG_CONFIG_LIBDIR="$DEPS_PREFIX/lib/pkgconfig"
 
-          # 收集所有 fftools/*.o
           mapfile -t FFOBJS < <(find fftools -type f -name '*.o' \
             ! -name 'ffplay*' ! -name 'ffprobe*' | sort)
 
