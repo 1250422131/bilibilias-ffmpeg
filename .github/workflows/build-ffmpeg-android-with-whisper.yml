@@ -57,7 +57,7 @@ jobs:
       - name: Clone FFmpeg
         run: |
           set -e
-          git clone https://github.com/FFmpeg/FFmpeg ffmpeg-src
+          git clone https://github.com/FFmpeg/FFmpeg.git ffmpeg-src
           cd ffmpeg-src
           git fetch --tags
           git checkout "${FFMPEG_TAG}"
@@ -65,7 +65,7 @@ jobs:
       - name: Clone whisper.cpp
         run: |
           set -e
-          git clone --depth=1 -b "${WHISPER_TAG}" https://github.com/ggerganov/whisper.cpp whisper-src
+          git clone --depth=1 -b "${WHISPER_TAG}" https://github.com/ggerganov/whisper.cpp.git whisper-src
 
       - name: Set up toolchain and env for ${{ matrix.abi }}
         run: |
@@ -292,21 +292,21 @@ jobs:
             -Wl,-z,max-page-size=16384
 
           # 4) Header for JNI call
-          cat > "$OUT_INC/ffmpeg_entry.h" << 'EOF'
-#ifndef FFMPEG_ENTRY_H
-#define FFMPEG_ENTRY_H
-#ifdef __cplusplus
-extern "C" {
-#endif
-// Example:
-//   const char* argv[] = {"ffmpeg", "-nostdin", "-h", 0};
-//   int ret = ffmpeg_main(3, (char**)argv);
-int ffmpeg_main(int argc, char **argv);
-#ifdef __cplusplus
-}
-#endif
-#endif // FFMPEG_ENTRY_H
-EOF
+          cat > "$OUT_INC/ffmpeg_entry.h" <<'EOF'
+          #ifndef FFMPEG_ENTRY_H
+          #define FFMPEG_ENTRY_H
+          #ifdef __cplusplus
+          extern "C" {
+          #endif
+          // Example:
+          //   const char* argv[] = {"ffmpeg", "-nostdin", "-h", 0};
+          //   int ret = ffmpeg_main(3, (char**)argv);
+          int ffmpeg_main(int argc, char **argv);
+          #ifdef __cplusplus
+          }
+          #endif
+          #endif // FFMPEG_ENTRY_H
+          EOF
 
           echo "Built: $OUT_LIB/libffmpeg_entry.so"
           "$NM" -D "$OUT_LIB/libffmpeg_entry.so" | grep -E ' ffmpeg_main$' || true
