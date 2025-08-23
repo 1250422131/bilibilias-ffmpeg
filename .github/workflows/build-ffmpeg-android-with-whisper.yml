@@ -232,18 +232,22 @@ jobs:
           EOF
           echo "ffmpeg_delegate.c generated."
 
-      - name: Compile ffmpeg.c and ffmpeg_delegate.c for ${{ matrix.abi }}
+      - name: Compile all required fftools/*.c for ${{ matrix.abi }}
         working-directory: ffmpeg-src
         run: |
-          # 编译 ffmpeg.c，重命名 main 并加 -fPIC
-          $CC -fPIC -Dmain=ffmpeg_real_main -I. -Ifftools -c fftools/ffmpeg.c -o fftools/ffmpeg.o
-          # 编译 delegate
-          $CC -fPIC -I. -Ifftools -c fftools/ffmpeg_delegate.c -o fftools/ffmpeg_delegate.o
+          SRC_FILES="ffmpeg.c cmdutils.c ffmpeg_filter.c ffmpeg_opt.c ffmpeg_hw.c ffmpeg_delegate.c"
+          for f in $SRC_FILES; do
+            if [[ "$f" == "ffmpeg.c" ]]; then
+              $CC -fPIC -Dmain=ffmpeg_real_main -I. -Ifftools -c fftools/$f -o fftools/${f%.c}.o
+            else
+              $CC -fPIC -I. -Ifftools -c fftools/$f -o fftools/${f%.c}.o
+            fi
+          done
 
       - name: Collect all necessary fftools object files
         working-directory: ffmpeg-src
         run: |
-          OBJ_FILES=$(find fftools -maxdepth 1 -type f -name '*.o' ! -name 'ffplay*' ! -name 'ffprobe*')
+          OBJ_FILES=$(ls fftools/*.o | grep -v ffplay | grep -v ffprobe)
           echo "$OBJ_FILES" > fftools/ffmpeg_objs.list
 
       - name: Link libffmpeg_entry.so (export ffmpeg_main)
