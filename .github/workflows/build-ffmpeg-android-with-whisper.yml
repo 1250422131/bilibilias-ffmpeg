@@ -271,11 +271,12 @@ jobs:
         working-directory: ffmpeg-src
         run: cp config.h "../android-build/${{ matrix.abi }}/config.h"
 
-      # === 保证 libwhisper.so 和 libggml.so 都被导出到最终产物目录 ===
-      - name: Copy libwhisper.so and libggml.so to output
+      # === 自动收集并导出所有依赖的 libwhisper*.so 和 libggml*.so 到最终产物目录 ===
+      - name: Copy whisper/ggml runtime so to output
         run: |
-          cp android-deps/${{ matrix.abi }}/lib/libwhisper.so android-build/${{ matrix.abi }}/lib/ || true
-          cp android-deps/${{ matrix.abi }}/lib/libggml.so android-build/${{ matrix.abi }}/lib/ || true
+          for f in android-deps/${{ matrix.abi }}/lib/libwhisper*.so android-deps/${{ matrix.abi }}/lib/libggml*.so; do
+            [ -f "$f" ] && cp "$f" android-build/${{ matrix.abi }}/lib/
+          done
 
       - name: Upload ${{ matrix.abi }} build artifact
         uses: actions/upload-artifact@v4
