@@ -1,4 +1,4 @@
-name: Build FFmpeg + Whisper for Android (multi-ABI, API 34, shared)
+name: Build FFmpeg + Whisper for Android (multi-ABI, API 34, shared, with ffmpeg_delegate)
 
 on:
   workflow_dispatch:
@@ -40,24 +40,20 @@ jobs:
             git wget unzip build-essential pkg-config yasm nasm cmake ninja-build \
             libc6:i386 libstdc++6:i386 lib32z1 gcc-multilib g++-multilib
           nasm -v
-
       - name: Download Android NDK
         run: |
           wget -q "https://dl.google.com/android/repository/android-ndk-${ANDROID_NDK_VERSION}-linux.zip"
           unzip -q -o android-ndk-${ANDROID_NDK_VERSION}-linux.zip
           echo "NDK=$PWD/android-ndk-${ANDROID_NDK_VERSION}" >> $GITHUB_ENV
-
       - name: Clone FFmpeg
         run: |
           git clone https://github.com/FFmpeg/FFmpeg.git ffmpeg-src
           cd ffmpeg-src
           git fetch --tags
           git checkout "${FFMPEG_TAG}"
-
       - name: Clone whisper.cpp
         run: |
           git clone --depth=1 -b "${WHISPER_TAG}" https://github.com/ggerganov/whisper.cpp.git whisper-src
-
       - name: Set up toolchain and env for ${{ matrix.abi }}
         run: |
           NDK="$PWD/android-ndk-${ANDROID_NDK_VERSION}"
@@ -99,7 +95,6 @@ jobs:
           echo "STRIP=$TOOLCHAIN/bin/llvm-strip" >> $GITHUB_ENV
           echo "NM=$TOOLCHAIN/bin/llvm-nm" >> $GITHUB_ENV
           echo "ANDROID_PLATFORM=android-${API_LEVEL}" >> $GITHUB_ENV
-
       - name: Build whisper.cpp for ${{ matrix.abi }}
         run: |
           set -euo pipefail
@@ -115,7 +110,6 @@ jobs:
             -DWHISPER_BUILD_EXAMPLES=OFF \
             -DCMAKE_BUILD_TYPE=Release
           cmake --build "whisper-build-${{ matrix.abi }}" -j"$(nproc)"
-
           # 复制库
           if [ -f "whisper-build-${{ matrix.abi }}/src/libwhisper.so" ]; then
             cp "whisper-build-${{ matrix.abi }}/src/libwhisper.so" "$DEPS_PREFIX/lib/"
@@ -127,7 +121,6 @@ jobs:
             exit 1
           fi
           find "whisper-build-${{ matrix.abi }}" -name "libggml*.so" -exec cp {} "$DEPS_PREFIX/lib/" \; || true
-
           # 复制头文件
           if [ -f "whisper-src/include/whisper.h" ]; then
             cp "whisper-src/include/whisper.h" "$DEPS_PREFIX/include/"
@@ -145,7 +138,6 @@ jobs:
           fi
           find whisper-src -name "ggml*.h" -type f -exec cp {} "$DEPS_PREFIX/include/" \; || true
           echo "DEPS_PREFIX=$DEPS_PREFIX" >> $GITHUB_ENV
-
       - name: Create whisper.pc
         run: |
           WHISPER_VER="${WHISPER_TAG#v}"
@@ -159,7 +151,6 @@ jobs:
             echo "Name: whisper"
             echo "Description: Whisper inference library"
             echo "Version: $WHISPER_VER"
-            # 仅一行 Libs
             printf "Libs: -L\${libdir} -lwhisper"
             for f in "$DEPS_PREFIX"/lib/libggml*.so; do
               [ -e "$f" ] || continue
@@ -169,7 +160,6 @@ jobs:
             echo ""
             echo "Cflags: -I\${includedir}"
           } > "$PC_FILE"
-
       - name: Verify setup
         run: |
           export PKG_CONFIG_PATH="$DEPS_PREFIX/lib/pkgconfig"
@@ -181,13 +171,11 @@ jobs:
           echo "=== pkg-config test ==="
           pkg-config --modversion whisper
           pkg-config --exists 'whisper >= 1.7.5' && echo "Version check PASS" || echo "Version check FAIL"
-
       - name: Clean before configure
         working-directory: ffmpeg-src
         run: |
           make distclean || true
           git clean -xdf || true
-
       - name: Configure FFmpeg for ${{ matrix.abi }} with whisper
         working-directory: ffmpeg-src
         run: |
@@ -221,14 +209,22 @@ jobs:
             $NEON_FLAG \
             --enable-whisper \
             --extra-ldflags="-Wl,-z,max-page-size=16384"
-
       - name: Build FFmpeg for ${{ matrix.abi }}
         working-directory: ffmpeg-src
         run: |
           make -j"$(nproc)"
           make install
 
-      # -------------- 新增：导出 libffmpeg_entry.so ----------------
+      # === 自动生成跳板文件 ffmpeg_delegate.c ===
+      - name: Generate ffmpeg_delegate.c
+        working-directory: ffmpeg-src
+        run: |
+          cat > fftools/ffmpeg_delegate.c <<'EOF'
+          extern int main(int argc, char **argv);
+          int ffmpeg_main(int argc, char **argv) { return main(argc, argv); }
+          EOF
+          echo "ffmpeg_delegate.c generated."
+
       - name: Build libffmpeg_entry.so (export ffmpeg_main)
         working-directory: ffmpeg-src
         run: |
@@ -236,21 +232,20 @@ jobs:
           OUT_LIB="$PWD/../android-build/${{ matrix.abi }}/lib"
           OUT_INC="$PWD/../android-build/${{ matrix.abi }}/include"
           mkdir -p "$OUT_LIB" "$OUT_INC"
-
           # 收集 fftools/*.o（去掉 ffplay/ffprobe）
           mapfile -t FFOBJS < <(find fftools -type f -name '*.o' \
             ! -name 'ffplay*' ! -name 'ffprobe*' | sort)
-
+          # 编译跳板
+          $CC -fPIC -I. -c fftools/ffmpeg_delegate.c -o fftools/ffmpeg_delegate.o
           echo "Linking libffmpeg_entry.so with objects:"
           printf '  %s\n' "${FFOBJS[@]}"
-
-          "$CC" -shared -o "$OUT_LIB/libffmpeg_entry.so" \
-            "${FFOBJS[@]}" \
+          # 链接 so
+          $CC -shared -o "$OUT_LIB/libffmpeg_entry.so" \
+            "${FFOBJS[@]}" fftools/ffmpeg_delegate.o \
             -L"$PWD/../android-build/${{ matrix.abi }}/lib" \
             -lavfilter -lavformat -lavdevice -lswscale -lavcodec -lswresample -lavutil \
             -lm -lz -llog \
             -Wl,-z,max-page-size=16384 -Wl,--allow-multiple-definition
-
           cat > "$OUT_INC/ffmpeg_entry.h" <<'EOF'
           #ifndef FFMPEG_ENTRY_H
           #define FFMPEG_ENTRY_H
@@ -263,9 +258,6 @@ jobs:
           #endif
           #endif
           EOF
-
-      # --------------------------------------------------------------
-
       - name: Copy config.h
         working-directory: ffmpeg-src
         run: cp config.h "../android-build/${{ matrix.abi }}/config.h"
