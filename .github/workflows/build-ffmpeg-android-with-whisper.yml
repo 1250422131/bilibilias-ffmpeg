@@ -1,4 +1,4 @@
-name: Build FFmpeg + Whisper + GGML for Android (multi-ABI, API 34, shared, with ffmpeg_delegate)
+name: Build FFmpeg + Whisper + GGML for Android (multi-ABI, shared, ffmpeg_main export)
 
 on:
   workflow_dispatch:
@@ -226,30 +226,39 @@ jobs:
           make -j"$(nproc)"
           make install
 
-      - name: Generate ffmpeg_delegate.c
+      - name: Generate ffmpeg_delegate.c (ffmpeg_main wrapper)
         working-directory: ffmpeg-src
         run: |
           cat > fftools/ffmpeg_delegate.c <<'EOF'
-          extern int main(int argc, char **argv);
-          int ffmpeg_main(int argc, char **argv) { return main(argc, argv); }
+          extern int ffmpeg_real_main(int argc, char **argv);
+          int ffmpeg_main(int argc, char **argv) { return ffmpeg_real_main(argc, argv); }
           EOF
           echo "ffmpeg_delegate.c generated."
 
-      - name: Build libffmpeg_entry.so (export ffmpeg_main)
+      - name: Compile ffmpeg.c and ffmpeg_delegate.c for ${{ matrix.abi }}
         working-directory: ffmpeg-src
         run: |
-          set -euo pipefail
+          # 编译 ffmpeg.c，重命名 main
+          $CC -Dmain=ffmpeg_real_main -I. -Ifftools -c fftools/ffmpeg.c -o fftools/ffmpeg.o
+          # 编译 delegate
+          $CC -I. -Ifftools -c fftools/ffmpeg_delegate.c -o fftools/ffmpeg_delegate.o
+
+      - name: Collect all necessary fftools object files
+        working-directory: ffmpeg-src
+        run: |
+          # 只收集 ffmpeg 相关对象，不包括 ffplay/ffprobe
+          OBJ_FILES=$(find fftools -maxdepth 1 -type f -name '*.o' ! -name 'ffplay*' ! -name 'ffprobe*')
+          echo "$OBJ_FILES" > fftools/ffmpeg_objs.list
+
+      - name: Link libffmpeg_entry.so (export ffmpeg_main)
+        working-directory: ffmpeg-src
+        run: |
           OUT_LIB="$PWD/../android-build/${{ matrix.abi }}/lib"
           OUT_INC="$PWD/../android-build/${{ matrix.abi }}/include"
           mkdir -p "$OUT_LIB" "$OUT_INC"
-          # 收集 fftools/*.o（去掉 ffplay/ffprobe）
-          mapfile -t FFOBJS < <(find fftools -type f -name '*.o' \
-            ! -name 'ffplay*' ! -name 'ffprobe*' | sort)
-          $CC -fPIC -I. -c fftools/ffmpeg_delegate.c -o fftools/ffmpeg_delegate.o
-          echo "Linking libffmpeg_entry.so with objects:"
-          printf '  %s\n' "${FFOBJS[@]}"
+          OBJ_FILES=$(cat fftools/ffmpeg_objs.list)
           $CC -shared -o "$OUT_LIB/libffmpeg_entry.so" \
-            "${FFOBJS[@]}" fftools/ffmpeg_delegate.o \
+            $OBJ_FILES \
             -L"$PWD/../android-build/${{ matrix.abi }}/lib" \
             -lavfilter -lavformat -lavdevice -lswscale -lavcodec -lswresample -lavutil \
             -lm -lz -llog \
@@ -271,7 +280,6 @@ jobs:
         working-directory: ffmpeg-src
         run: cp config.h "../android-build/${{ matrix.abi }}/config.h"
 
-      # === 自动收集并导出所有依赖的 libwhisper*.so 和 libggml*.so 到最终产物目录 ===
       - name: Copy whisper/ggml runtime so to output
         run: |
           for f in android-deps/${{ matrix.abi }}/lib/libwhisper*.so android-deps/${{ matrix.abi }}/lib/libggml*.so; do
