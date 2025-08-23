@@ -1,4 +1,4 @@
-name: Build FFmpeg + Whisper + GGML for Android (multi-ABI, shared, ffmpeg_main export)
+name: Build FFmpeg + Whisper + GGML for Android (multi-ABI, shared, ffmpeg_main export, full fftools coverage)
 
 on:
   workflow_dispatch:
@@ -232,23 +232,27 @@ jobs:
           EOF
           echo "ffmpeg_delegate.c generated."
 
-      - name: Compile all required fftools/*.c for ${{ matrix.abi }}
+      - name: Compile all fftools/*.c (except ffplay/ffprobe) with -fPIC for ${{ matrix.abi }}
         working-directory: ffmpeg-src
         run: |
-          SRC_FILES="ffmpeg.c cmdutils.c ffmpeg_filter.c ffmpeg_opt.c ffmpeg_hw.c ffmpeg_delegate.c"
-          for f in $SRC_FILES; do
-            if [[ "$f" == "ffmpeg.c" ]]; then
-              $CC -fPIC -Dmain=ffmpeg_real_main -I. -Ifftools -c fftools/$f -o fftools/${f%.c}.o
+          # 编译所有fftols下C文件（排除ffplay、ffprobe），ffmpeg.c用main重命名
+          for src in fftools/*.c; do
+            base=$(basename "$src")
+            if [[ "$base" == "ffplay.c" || "$base" == "ffprobe.c" ]]; then
+              continue
+            fi
+            if [[ "$base" == "ffmpeg.c" ]]; then
+              $CC -fPIC -Dmain=ffmpeg_real_main -I. -Ifftools -c "$src" -o "fftools/${base%.c}.o"
             else
-              $CC -fPIC -I. -Ifftools -c fftools/$f -o fftools/${f%.c}.o
+              $CC -fPIC -I. -Ifftools -c "$src" -o "fftools/${base%.c}.o"
             fi
           done
+          $CC -fPIC -I. -Ifftools -c fftools/ffmpeg_delegate.c -o fftools/ffmpeg_delegate.o
 
       - name: Collect all necessary fftools object files
         working-directory: ffmpeg-src
         run: |
-          OBJ_FILES=$(ls fftools/*.o | grep -v ffplay | grep -v ffprobe)
-          echo "$OBJ_FILES" > fftools/ffmpeg_objs.list
+          ls fftools/*.o | grep -v ffplay | grep -v ffprobe > fftools/ffmpeg_objs.list
 
       - name: Link libffmpeg_entry.so (export ffmpeg_main)
         working-directory: ffmpeg-src
@@ -290,4 +294,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ffmpeg-whisper-android-${{ matrix.abi }}
-          path: android-build/${{ matrix.abi }}
+          path: android-build/${{ matrix.abi }}"
