@@ -119,7 +119,7 @@ jobs:
 
           cmake --build "whisper-build-${{ matrix.abi }}" -j"$(nproc)"
 
-          # 复制库文件
+          # Copy libs
           if [ -f "whisper-build-${{ matrix.abi }}/src/libwhisper.so" ]; then
             cp "whisper-build-${{ matrix.abi }}/src/libwhisper.so" "$DEPS_PREFIX/lib/"
           elif [ -f "whisper-build-${{ matrix.abi }}/libwhisper.so" ]; then
@@ -130,50 +130,61 @@ jobs:
             exit 1
           fi
 
-          find "whisper-build-${{ matrix.abi }}" -name "libggml*.so" -exec cp {} "$DEPS_PREFIX/lib/" \; || true
+          # Copy ggml-related shared libs (names vary by ggml version)
+          find "whisper-build-${{ matrix.abi }}" -maxdepth 3 -type f -name "libggml*.so" -exec cp -v {} "$DEPS_PREFIX/lib/" \; || true
 
-          # 复制头文件 - whisper.h
+          # Headers
           if [ -f "whisper-src/include/whisper.h" ]; then
             cp "whisper-src/include/whisper.h" "$DEPS_PREFIX/include/"
           elif [ -f "whisper-src/whisper.h" ]; then
             cp "whisper-src/whisper.h" "$DEPS_PREFIX/include/"
           else
-            echo "Finding whisper.h..."
-            find whisper-src -name "whisper.h" -type f
             find whisper-src -name "whisper.h" -type f -exec cp {} "$DEPS_PREFIX/include/" \;
           fi
 
-          # 复制头文件 - ggml.h (whisper.h 依赖)
           if [ -f "whisper-src/ggml/include/ggml.h" ]; then
             cp "whisper-src/ggml/include/ggml.h" "$DEPS_PREFIX/include/"
           elif [ -f "whisper-src/ggml.h" ]; then
             cp "whisper-src/ggml.h" "$DEPS_PREFIX/include/"
           else
-            echo "Finding ggml.h..."
-            find whisper-src -name "ggml.h" -type f
             find whisper-src -name "ggml.h" -type f -exec cp {} "$DEPS_PREFIX/include/" \;
           fi
 
-          # 复制其他可能需要的 ggml 头文件
           find whisper-src -name "ggml*.h" -type f -exec cp {} "$DEPS_PREFIX/include/" \; || true
 
           echo "DEPS_PREFIX=$DEPS_PREFIX" >> $GITHUB_ENV
 
-      - name: Create whisper.pc
+      - name: Create whisper.pc (include ggml libs)
         run: |
+          set -euo pipefail
           WHISPER_VER="${WHISPER_TAG#v}"
           PC_FILE="$DEPS_PREFIX/lib/pkgconfig/whisper.pc"
-          
-          echo "prefix=$DEPS_PREFIX" > "$PC_FILE"
-          echo "exec_prefix=\${prefix}" >> "$PC_FILE"
-          echo "libdir=\${prefix}/lib" >> "$PC_FILE"
-          echo "includedir=\${prefix}/include" >> "$PC_FILE"
-          echo "" >> "$PC_FILE"
-          echo "Name: whisper" >> "$PC_FILE"
-          echo "Description: Whisper inference library" >> "$PC_FILE"
-          echo "Version: $WHISPER_VER" >> "$PC_FILE"
-          echo "Libs: -L\${libdir} -lwhisper" >> "$PC_FILE"
-          echo "Cflags: -I\${includedir}" >> "$PC_FILE"
+
+          # Collect ggml libs to link with (e.g., libggml.so, libggml-base.so, libggml-cpu.so, etc.)
+          GGML_LIBS=""
+          if ls "$DEPS_PREFIX/lib"/libggml*.so >/dev/null 2>&1; then
+            for f in "$DEPS_PREFIX/lib"/libggml*.so; do
+              b="$(basename "$f")"
+              n="${b#lib}"; n="${n%.so}"
+              GGML_LIBS="$GGML_LIBS -l${n}"
+            done
+          fi
+
+          {
+            echo "prefix=$DEPS_PREFIX"
+            echo "exec_prefix=\${prefix}"
+            echo "libdir=\${prefix}/lib"
+            echo "includedir=\${prefix}/include"
+            echo ""
+            echo "Name: whisper"
+            echo "Description: Whisper inference library (with ggml backends)"
+            echo "Version: $WHISPER_VER"
+            echo "Libs: -L\${libdir} -lwhisper${GGML_LIBS}"
+            echo "Cflags: -I\${includedir}"
+          } > "$PC_FILE"
+
+          echo "Created $PC_FILE:"
+          cat "$PC_FILE"
 
       - name: Verify setup
         run: |
@@ -183,10 +194,9 @@ jobs:
           echo "=== Files in deps ==="
           find "$DEPS_PREFIX" -type f | sort
           
-          echo "=== Header files ==="
-          ls -la "$DEPS_PREFIX/include/"
-          
-          echo "=== pkg-config test ==="
+          echo "=== pkg-config whisper ==="
+          echo "cflags: $(pkg-config --cflags whisper || true)"
+          echo "libs:   $(pkg-config --libs whisper || true)"
           pkg-config --modversion whisper
           pkg-config --exists 'whisper >= 1.7.5' && echo "Version check PASS" || echo "Version check FAIL"
 
@@ -196,7 +206,7 @@ jobs:
           make distclean || true
           git clean -xdf || true
 
-      - name: Configure FFmpeg for ${{ matrix.abi }} with whisper
+      - name: Configure FFmpeg for ${{ matrix.abi }} with whisper (build ffmpeg CLI)
         working-directory: ffmpeg-src
         run: |
           set -euo pipefail
@@ -232,7 +242,6 @@ jobs:
             --enable-pic \
             --disable-debug \
             $NEON_FLAG \
-            --enable-whisper \
             --extra-ldflags="-Wl,-z,max-page-size=16384"
 
       - name: Build FFmpeg for ${{ matrix.abi }}
