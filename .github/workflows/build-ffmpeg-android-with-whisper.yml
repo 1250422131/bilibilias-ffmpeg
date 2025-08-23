@@ -12,13 +12,9 @@ on:
         required: true
         default: "r27"
       whisper-tag:
-        description: "whisper.cpp tag (>= v1.7.6)"
+        description: "whisper.cpp tag (>= v1.7.5)"
         required: true
-        default: "v1.7.6"
-
-defaults:
-  run:
-    shell: bash
+        default: "v1.7.5"
 
 jobs:
   build:
@@ -31,15 +27,13 @@ jobs:
       API_LEVEL: 34
       FFMPEG_TAG: ${{ inputs.ffmpeg-tag || 'n8.0' }}
       ANDROID_NDK_VERSION: ${{ inputs.ndk-version || 'r27' }}
-      WHISPER_TAG: ${{ inputs.whisper-tag || 'v1.7.6' }}
-
+      WHISPER_TAG: ${{ inputs.whisper-tag || 'v1.7.5' }}
     steps:
       - name: Checkout workflow files
         uses: actions/checkout@v4
 
       - name: Install dependencies
         run: |
-          set -e
           sudo dpkg --add-architecture i386
           sudo apt-get update
           sudo apt-get install -y \
@@ -49,14 +43,12 @@ jobs:
 
       - name: Download Android NDK
         run: |
-          set -e
           wget -q "https://dl.google.com/android/repository/android-ndk-${ANDROID_NDK_VERSION}-linux.zip"
-          unzip -q -o "android-ndk-${ANDROID_NDK_VERSION}-linux.zip"
-          echo "NDK=$PWD/android-ndk-${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+          unzip -q -o android-ndk-${ANDROID_NDK_VERSION}-linux.zip
+          echo "NDK=$PWD/android-ndk-${ANDROID_NDK_VERSION}" >> $GITHUB_ENV
 
       - name: Clone FFmpeg
         run: |
-          set -e
           git clone https://github.com/FFmpeg/FFmpeg.git ffmpeg-src
           cd ffmpeg-src
           git fetch --tags
@@ -64,15 +56,12 @@ jobs:
 
       - name: Clone whisper.cpp
         run: |
-          set -e
           git clone --depth=1 -b "${WHISPER_TAG}" https://github.com/ggerganov/whisper.cpp.git whisper-src
 
       - name: Set up toolchain and env for ${{ matrix.abi }}
         run: |
-          set -e
           NDK="$PWD/android-ndk-${ANDROID_NDK_VERSION}"
           TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
-
           case "${{ matrix.abi }}" in
             arm64-v8a)
               ARCH=arm64
@@ -99,28 +88,23 @@ jobs:
               CXX="$TOOLCHAIN/bin/x86_64-linux-android${API_LEVEL}-clang++"
               ;;
           esac
-
-          {
-            echo "ARCH=$ARCH"
-            echo "CPU=$CPU"
-            echo "ANDROID_ABI=$ANDROID_ABI"
-            echo "CROSS_PREFIX=$CROSS_PREFIX"
-            echo "CC=$CC"
-            echo "CXX=$CXX"
-            echo "AR=$TOOLCHAIN/bin/llvm-ar"
-            echo "RANLIB=$TOOLCHAIN/bin/llvm-ranlib"
-            echo "STRIP=$TOOLCHAIN/bin/llvm-strip"
-            echo "NM=$TOOLCHAIN/bin/llvm-nm"
-            echo "OBJCOPY=$TOOLCHAIN/bin/llvm-objcopy"
-            echo "ANDROID_PLATFORM=android-${API_LEVEL}"
-          } >> "$GITHUB_ENV"
+          echo "ARCH=$ARCH" >> $GITHUB_ENV
+          echo "CPU=$CPU" >> $GITHUB_ENV
+          echo "ANDROID_ABI=$ANDROID_ABI" >> $GITHUB_ENV
+          echo "CROSS_PREFIX=$CROSS_PREFIX" >> $GITHUB_ENV
+          echo "CC=$CC" >> $GITHUB_ENV
+          echo "CXX=$CXX" >> $GITHUB_ENV
+          echo "AR=$TOOLCHAIN/bin/llvm-ar" >> $GITHUB_ENV
+          echo "RANLIB=$TOOLCHAIN/bin/llvm-ranlib" >> $GITHUB_ENV
+          echo "STRIP=$TOOLCHAIN/bin/llvm-strip" >> $GITHUB_ENV
+          echo "NM=$TOOLCHAIN/bin/llvm-nm" >> $GITHUB_ENV
+          echo "ANDROID_PLATFORM=android-${API_LEVEL}" >> $GITHUB_ENV
 
       - name: Build whisper.cpp for ${{ matrix.abi }}
         run: |
           set -euo pipefail
           DEPS_PREFIX="$PWD/android-deps/${{ matrix.abi }}"
           mkdir -p "$DEPS_PREFIX"/{lib,include,lib/pkgconfig}
-
           cmake -S whisper-src -B "whisper-build-${{ matrix.abi }}" -G Ninja \
             -DANDROID_NDK="$NDK" \
             -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
@@ -130,7 +114,6 @@ jobs:
             -DWHISPER_BUILD_TESTS=OFF \
             -DWHISPER_BUILD_EXAMPLES=OFF \
             -DCMAKE_BUILD_TYPE=Release
-
           cmake --build "whisper-build-${{ matrix.abi }}" -j"$(nproc)"
 
           # 复制库
@@ -143,7 +126,7 @@ jobs:
             find "whisper-build-${{ matrix.abi }}" -name "*.so" -type f
             exit 1
           fi
-          find "whisper-build-${{ matrix.abi }}" -maxdepth 3 -type f -name "libggml*.so" -exec cp {} "$DEPS_PREFIX/lib/" \; || true
+          find "whisper-build-${{ matrix.abi }}" -name "libggml*.so" -exec cp {} "$DEPS_PREFIX/lib/" \; || true
 
           # 复制头文件
           if [ -f "whisper-src/include/whisper.h" ]; then
@@ -161,8 +144,7 @@ jobs:
             find whisper-src -name "ggml.h" -type f -exec cp {} "$DEPS_PREFIX/include/" \;
           fi
           find whisper-src -name "ggml*.h" -type f -exec cp {} "$DEPS_PREFIX/include/" \; || true
-
-          echo "DEPS_PREFIX=$DEPS_PREFIX" >> "$GITHUB_ENV"
+          echo "DEPS_PREFIX=$DEPS_PREFIX" >> $GITHUB_ENV
 
       - name: Create whisper.pc
         run: |
@@ -186,10 +168,21 @@ jobs:
             echo "Cflags: -I\${includedir}"
           } > "$PC_FILE"
 
-      - name: Clean FFmpeg tree
+      - name: Verify setup
+        run: |
+          export PKG_CONFIG_PATH="$DEPS_PREFIX/lib/pkgconfig"
+          export PKG_CONFIG_LIBDIR="$DEPS_PREFIX/lib/pkgconfig"
+          echo "=== Files in deps ==="
+          find "$DEPS_PREFIX" -type f | sort
+          echo "=== Header files ==="
+          ls -la "$DEPS_PREFIX/include/"
+          echo "=== pkg-config test ==="
+          pkg-config --modversion whisper
+          pkg-config --exists 'whisper >= 1.7.5' && echo "Version check PASS" || echo "Version check FAIL"
+
+      - name: Clean before configure
         working-directory: ffmpeg-src
         run: |
-          set -e
           make distclean || true
           git clean -xdf || true
 
@@ -200,17 +193,12 @@ jobs:
           export PKG_CONFIG_PATH="$DEPS_PREFIX/lib/pkgconfig"
           export PKG_CONFIG_LIBDIR="$DEPS_PREFIX/lib/pkgconfig"
           mkdir -p "../android-build/${{ matrix.abi }}"
-
           NEON_FLAG=""
           if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "arm" ]; then
             NEON_FLAG="--enable-neon"
           fi
-
-          # 收集全部 ggml 库，避免 undefined reference
-          GGML_LIBS=$(find "$DEPS_PREFIX/lib" -name 'libggml*.so' -printf "-l%f " | sed 's/-llib/-l/g; s/\.so//g')
-
           ./configure \
-            --prefix="../android-build/${{ matrix.abi }}" \
+            --prefix="$PWD/../android-build/${{ matrix.abi }}" \
             --target-os=android \
             --arch="$ARCH" \
             --cpu="$CPU" \
@@ -225,22 +213,20 @@ jobs:
             --enable-shared \
             --disable-static \
             --disable-doc \
-            --disable-ffprobe \
-            --disable-ffplay \
+            --disable-programs \
             --enable-pic \
             --disable-debug \
-            --enable-whisper \
             $NEON_FLAG \
-            --extra-libs="$(pkg-config --libs whisper) $GGML_LIBS" \
-            --extra-ldflags="-Wl,-z,max-page-size=16384 -Wl,--allow-shlib-undefined"
+            --enable-whisper \
+            --extra-ldflags="-Wl,-z,max-page-size=16384"
 
       - name: Build FFmpeg for ${{ matrix.abi }}
         working-directory: ffmpeg-src
         run: |
-          set -e
           make -j"$(nproc)"
           make install
 
+      # -------------- 新增：导出 libffmpeg_entry.so ----------------
       - name: Build libffmpeg_entry.so (export ffmpeg_main)
         working-directory: ffmpeg-src
         run: |
@@ -249,9 +235,7 @@ jobs:
           OUT_INC="$PWD/../android-build/${{ matrix.abi }}/include"
           mkdir -p "$OUT_LIB" "$OUT_INC"
 
-          export PKG_CONFIG_PATH="$DEPS_PREFIX/lib/pkgconfig"
-          export PKG_CONFIG_LIBDIR="$DEPS_PREFIX/lib/pkgconfig"
-
+          # 收集 fftools/*.o（去掉 ffplay/ffprobe）
           mapfile -t FFOBJS < <(find fftools -type f -name '*.o' \
             ! -name 'ffplay*' ! -name 'ffprobe*' | sort)
 
@@ -260,12 +244,10 @@ jobs:
 
           "$CC" -shared -o "$OUT_LIB/libffmpeg_entry.so" \
             "${FFOBJS[@]}" \
-            -L"$OUT_LIB" \
+            -L"$PWD/../android-build/${{ matrix.abi }}/lib" \
             -lavfilter -lavformat -lavdevice -lswscale -lavcodec -lswresample -lavutil \
-            $(pkg-config --libs whisper) \
             -lm -lz -llog \
-            -Wl,-z,max-page-size=16384 \
-            -Wl,--allow-multiple-definition
+            -Wl,-z,max-page-size=16384 -Wl,--allow-multiple-definition
 
           cat > "$OUT_INC/ffmpeg_entry.h" <<'EOF'
           #ifndef FFMPEG_ENTRY_H
@@ -279,6 +261,8 @@ jobs:
           #endif
           #endif
           EOF
+
+      # --------------------------------------------------------------
 
       - name: Copy config.h
         working-directory: ffmpeg-src
