@@ -1,4 +1,4 @@
-name: Build FFmpeg + Whisper + GGML for Android (multi-ABI, shared, ffmpeg_main export, robust fftools coverage)
+name: Build FFmpeg + Whisper for Android (multi-ABI, API 34, shared)
 
 on:
   workflow_dispatch:
@@ -43,20 +43,20 @@ jobs:
 
       - name: Download Android NDK
         run: |
-          wget -q "https://dl.google.com/android/repository/android-ndk-${ANDROID_NDK_VERSION}-linux.zip"
+          wget -q https://dl.google.com/android/repository/android-ndk-${ANDROID_NDK_VERSION}-linux.zip
           unzip -q -o android-ndk-${ANDROID_NDK_VERSION}-linux.zip
           echo "NDK=$PWD/android-ndk-${ANDROID_NDK_VERSION}" >> $GITHUB_ENV
 
       - name: Clone FFmpeg
         run: |
-          git clone https://github.com/FFmpeg/FFmpeg.git ffmpeg-src
+          git clone https://github.com/FFmpeg/FFmpeg ffmpeg-src
           cd ffmpeg-src
           git fetch --tags
           git checkout "${FFMPEG_TAG}"
 
       - name: Clone whisper.cpp
         run: |
-          git clone --depth=1 -b "${WHISPER_TAG}" https://github.com/ggerganov/whisper.cpp.git whisper-src
+          git clone --depth=1 -b "${WHISPER_TAG}" https://github.com/ggerganov/whisper.cpp whisper-src
 
       - name: Set up toolchain and env for ${{ matrix.abi }}
         run: |
@@ -115,6 +115,8 @@ jobs:
             -DWHISPER_BUILD_EXAMPLES=OFF \
             -DCMAKE_BUILD_TYPE=Release
           cmake --build "whisper-build-${{ matrix.abi }}" -j"$(nproc)"
+
+          # 复制库文件
           if [ -f "whisper-build-${{ matrix.abi }}/src/libwhisper.so" ]; then
             cp "whisper-build-${{ matrix.abi }}/src/libwhisper.so" "$DEPS_PREFIX/lib/"
           elif [ -f "whisper-build-${{ matrix.abi }}/libwhisper.so" ]; then
@@ -125,6 +127,8 @@ jobs:
             exit 1
           fi
           find "whisper-build-${{ matrix.abi }}" -name "libggml*.so" -exec cp {} "$DEPS_PREFIX/lib/" \; || true
+
+          # 复制头文件
           if [ -f "whisper-src/include/whisper.h" ]; then
             cp "whisper-src/include/whisper.h" "$DEPS_PREFIX/include/"
           elif [ -f "whisper-src/whisper.h" ]; then
@@ -132,6 +136,7 @@ jobs:
           else
             find whisper-src -name "whisper.h" -type f -exec cp {} "$DEPS_PREFIX/include/" \;
           fi
+
           if [ -f "whisper-src/ggml/include/ggml.h" ]; then
             cp "whisper-src/ggml/include/ggml.h" "$DEPS_PREFIX/include/"
           elif [ -f "whisper-src/ggml.h" ]; then
@@ -139,6 +144,7 @@ jobs:
           else
             find whisper-src -name "ggml.h" -type f -exec cp {} "$DEPS_PREFIX/include/" \;
           fi
+
           find whisper-src -name "ggml*.h" -type f -exec cp {} "$DEPS_PREFIX/include/" \; || true
           echo "DEPS_PREFIX=$DEPS_PREFIX" >> $GITHUB_ENV
 
@@ -146,26 +152,18 @@ jobs:
         run: |
           WHISPER_VER="${WHISPER_TAG#v}"
           PC_FILE="$DEPS_PREFIX/lib/pkgconfig/whisper.pc"
-          {
-            echo "prefix=$DEPS_PREFIX"
-            echo "exec_prefix=\${prefix}"
-            echo "libdir=\${prefix}/lib"
-            echo "includedir=\${prefix}/include"
-            echo ""
-            echo "Name: whisper"
-            echo "Description: Whisper inference library"
-            echo "Version: $WHISPER_VER"
-            printf "Libs: -L\${libdir} -lwhisper"
-            for f in "$DEPS_PREFIX"/lib/libggml*.so; do
-              [ -e "$f" ] || continue
-              libname=$(basename "$f" .so)
-              printf " -l${libname#lib}"
-            done
-            echo ""
-            echo "Cflags: -I\${includedir}"
-          } > "$PC_FILE"
+          echo "prefix=$DEPS_PREFIX" > "$PC_FILE"
+          echo "exec_prefix=\${prefix}" >> "$PC_FILE"
+          echo "libdir=\${prefix}/lib" >> "$PC_FILE"
+          echo "includedir=\${prefix}/include" >> "$PC_FILE"
+          echo "" >> "$PC_FILE"
+          echo "Name: whisper" >> "$PC_FILE"
+          echo "Description: Whisper inference library" >> "$PC_FILE"
+          echo "Version: $WHISPER_VER" >> "$PC_FILE"
+          echo "Libs: -L\${libdir} -lwhisper" >> "$PC_FILE"
+          echo "Cflags: -I\${includedir}" >> "$PC_FILE"
 
-      - name: Verify whisper build
+      - name: Verify setup
         run: |
           export PKG_CONFIG_PATH="$DEPS_PREFIX/lib/pkgconfig"
           export PKG_CONFIG_LIBDIR="$DEPS_PREFIX/lib/pkgconfig"
@@ -189,7 +187,7 @@ jobs:
           set -euo pipefail
           export PKG_CONFIG_PATH="$DEPS_PREFIX/lib/pkgconfig"
           export PKG_CONFIG_LIBDIR="$DEPS_PREFIX/lib/pkgconfig"
-          mkdir -p "../android-build/${{ matrix.abi }}"
+          mkdir -p ../android-build/${{ matrix.abi }}
           NEON_FLAG=""
           if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "arm" ]; then
             NEON_FLAG="--enable-neon"
@@ -223,83 +221,16 @@ jobs:
           make -j"$(nproc)"
           make install
 
-      - name: Generate ffmpeg_delegate.c (ffmpeg_main wrapper)
-        working-directory: ffmpeg-src
-        run: |
-          cat > fftools/ffmpeg_delegate.c <<'EOF'
-          extern int ffmpeg_real_main(int argc, char **argv);
-          int ffmpeg_main(int argc, char **argv) { return ffmpeg_real_main(argc, argv); }
-          EOF
-          echo "ffmpeg_delegate.c generated."
-
-      - name: Compile all needed fftools sources (auto, modular CLI safe)
-        working-directory: ffmpeg-src
-        run: |
-          cd fftools
-          for src in *.c; do
-            # 跳过 ffplay、ffprobe 及 ffplay 相关
-            [[ "$src" == ffplay* || "$src" == "ffprobe.c" ]] && continue
-            if [[ "$src" == "ffmpeg.c" ]]; then
-              $CC -fPIC -Dmain=ffmpeg_real_main -I.. -I. -c "$src" -o "${src%.c}.o"
-            else
-              $CC -fPIC -I.. -I. -c "$src" -o "${src%.c}.o"
-            fi
-          done
-          cd ..
-          ls fftools/*.o | grep -v ffplay | grep -v ffprobe > fftools/ffmpeg_objs.list
-
-      - name: Link libffmpeg_entry.so (export ffmpeg_main)
-        working-directory: ffmpeg-src
-        run: |
-          OUT_LIB="$PWD/../android-build/${{ matrix.abi }}/lib"
-          OUT_INC="$PWD/../android-build/${{ matrix.abi }}/include"
-          mkdir -p "$OUT_LIB" "$OUT_INC"
-          OBJ_FILES=$(cat fftools/ffmpeg_objs.list)
-          $CC -shared -o "$OUT_LIB/libffmpeg_entry.so" \
-            $OBJ_FILES \
-            -L"$PWD/../android-build/${{ matrix.abi }}/lib" \
-            -lavfilter -lavformat -lavdevice -lswscale -lavcodec -lswresample -lavutil \
-            -lm -lz -llog \
-            -Wl,-z,max-page-size=16384 -Wl,--allow-multiple-definition
-          cat > "$OUT_INC/ffmpeg_entry.h" <<'EOF'
-          #ifndef FFMPEG_ENTRY_H
-          #define FFMPEG_ENTRY_H
-          #ifdef __cplusplus
-          extern "C" {
-          #endif
-          int ffmpeg_main(int argc, char **argv);
-          #ifdef __cplusplus
-          }
-          #endif
-          #endif
-          EOF
-
-      - name: Copy config.h
+      - name: Copy config.h to output dir
         working-directory: ffmpeg-src
         run: cp config.h "../android-build/${{ matrix.abi }}/config.h"
 
-      - name: Copy whisper/ggml runtime so to output
+      - name: Copy whisper shared libs into output
         run: |
-          for f in android-deps/${{ matrix.abi }}/lib/libwhisper*.so android-deps/${{ matrix.abi }}/lib/libggml*.so; do
-            [ -f "$f" ] && cp "$f" android-build/${{ matrix.abi }}/lib/
-          done
-
-      - name: List build outputs before artifact upload
-        run: |
-          echo "== Listing android-build/${{ matrix.abi }} =="
-          ls -lR android-build/${{ matrix.abi }} || true
-          echo "== Listing android-build/${{ matrix.abi }}/lib =="
-          ls -lR android-build/${{ matrix.abi }}/lib || true
-
-      - name: Fail if output is missing
-        run: |
-          if [ ! -d android-build/${{ matrix.abi }}/lib ] || ! ls android-build/${{ matrix.abi }}/lib/*.so 1>/dev/null 2>&1; then
-            echo "::error ::Shared libraries not found in android-build/${{ matrix.abi }}/lib"
-            exit 1
-          fi
+          cp -v android-deps/${{ matrix.abi }}/lib/*.so android-build/${{ matrix.abi }}/lib/
 
       - name: Upload ${{ matrix.abi }} build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ffmpeg-whisper-android-${{ matrix.abi }}
-          path: android-build/${{ matrix.abi }}/**
+          name: ffmpeg-android-${{ matrix.abi }}
+          path: android-build/${{ matrix.abi }}
