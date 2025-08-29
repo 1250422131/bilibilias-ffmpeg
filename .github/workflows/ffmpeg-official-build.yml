@@ -105,28 +105,27 @@ jobs:
           NM: ${{ env.NM }}
         run: |
           mkdir -p ../android-build/${{ matrix.abi }}
-          ./configure \
-            --prefix=$PWD/../android-build/${{ matrix.abi }} \
-            --target-os=android \
-            --arch=$ARCH \
-            --cpu=$CPU \
-            --cross-prefix=$CROSS_PREFIX \
-            --cc=$CC \
-            --ar=$AR \
-            --ranlib=$RANLIB \
-            --strip=$STRIP \
-            --nm=$NM \
-            --enable-cross-compile \
-            --enable-shared \
-            --disable-static \
-            --disable-doc \
-            --disable-programs \
-            --enable-pic \
-            --disable-debug \
-            --disable-iconv \
-            --disable-glob \
-            $( [ "$ARCH" = "arm64" -o "$ARCH" = "arm" ] && echo "--enable-neon" ) \
-            --extra-ldflags="-Wl,-z,max-page-size=16384"
+          ac_cv_func_glob=no ./configure \
+          --prefix=$PWD/../android-build/${{ matrix.abi }} \
+          --target-os=android \
+          --arch=$ARCH \
+          --cpu=$CPU \
+          --cross-prefix=$CROSS_PREFIX \
+          --cc=$CC \
+          --ar=$AR \
+          --ranlib=$RANLIB \
+          --strip=$STRIP \
+          --nm=$NM \
+          --enable-cross-compile \
+          --enable-shared \
+          --disable-static \
+          --disable-doc \
+          --disable-programs \
+          --enable-pic \
+          --disable-debug \
+          --disable-iconv \
+          $( [ "$ARCH" = "arm64" -o "$ARCH" = "arm" ] && echo "--enable-neon" ) \
+          --extra-ldflags="-Wl,-z,max-page-size=16384"
 
       - name: Build FFmpeg for ${{ matrix.abi }}
         working-directory: ffmpeg-src
