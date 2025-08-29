@@ -124,6 +124,7 @@ jobs:
             --enable-pic \
             --disable-debug \
             --disable-iconv \
+            --disable-glob \
             $( [ "$ARCH" = "arm64" -o "$ARCH" = "arm" ] && echo "--enable-neon" ) \
             --extra-ldflags="-Wl,-z,max-page-size=16384"
 
