@@ -69,6 +69,7 @@ jobs:
               export TARGET_HOST=aarch64-linux-android
               export CROSS_PREFIX="$TOOLCHAIN/bin/aarch64-linux-android-"
               export CC="$TOOLCHAIN/bin/aarch64-linux-android${MIN_API_LEVEL}-clang"
+              export CXX="$TOOLCHAIN/bin/aarch64-linux-android${MIN_API_LEVEL}-clang++"
               export MESON_CPU_FAMILY=aarch64
               export MESON_CPU=armv8-a
               ;;
@@ -78,6 +79,7 @@ jobs:
               export TARGET_HOST=armv7a-linux-androideabi
               export CROSS_PREFIX="$TOOLCHAIN/bin/arm-linux-androideabi-"
               export CC="$TOOLCHAIN/bin/armv7a-linux-androideabi${MIN_API_LEVEL}-clang"
+              export CXX="$TOOLCHAIN/bin/armv7a-linux-androideabi${MIN_API_LEVEL}-clang++"
               export MESON_CPU_FAMILY=arm
               export MESON_CPU=armv7-a
               ;;
@@ -87,6 +89,7 @@ jobs:
               export TARGET_HOST=x86_64-linux-android
               export CROSS_PREFIX="$TOOLCHAIN/bin/x86_64-linux-android-"
               export CC="$TOOLCHAIN/bin/x86_64-linux-android${MIN_API_LEVEL}-clang"
+              export CXX="$TOOLCHAIN/bin/x86_64-linux-android${MIN_API_LEVEL}-clang++"
               export MESON_CPU_FAMILY=x86_64
               export MESON_CPU=x86-64
               ;;
@@ -95,6 +98,7 @@ jobs:
           export RANLIB="$TOOLCHAIN/bin/llvm-ranlib"
           export STRIP="$TOOLCHAIN/bin/llvm-strip"
           export NM="$TOOLCHAIN/bin/llvm-nm"
+          export LD="$TOOLCHAIN/bin/ld"
           export SYSROOT="$TOOLCHAIN/sysroot"
           
           echo "ARCH=$ARCH" >> $GITHUB_ENV
@@ -102,10 +106,12 @@ jobs:
           echo "TARGET_HOST=$TARGET_HOST" >> $GITHUB_ENV
           echo "CROSS_PREFIX=$CROSS_PREFIX" >> $GITHUB_ENV
           echo "CC=$CC" >> $GITHUB_ENV
+          echo "CXX=$CXX" >> $GITHUB_ENV
           echo "AR=$AR" >> $GITHUB_ENV
           echo "RANLIB=$RANLIB" >> $GITHUB_ENV
           echo "STRIP=$STRIP" >> $GITHUB_ENV
           echo "NM=$NM" >> $GITHUB_ENV
+          echo "LD=$LD" >> $GITHUB_ENV
           echo "SYSROOT=$SYSROOT" >> $GITHUB_ENV
           echo "MESON_CPU_FAMILY=$MESON_CPU_FAMILY" >> $GITHUB_ENV
           echo "MESON_CPU=$MESON_CPU" >> $GITHUB_ENV
@@ -117,7 +123,7 @@ jobs:
           cat > meson-cross/android-${{ matrix.abi }}.ini <<EOF
           [binaries]
           c = '${{ env.CC }}'
-          cpp = '${CC/clang/clang++}'
+          cpp = '${{ env.CXX }}'
           ar = '${{ env.AR }}'
           strip = '${{ env.STRIP }}'
           pkgconfig = '/usr/bin/false'
@@ -182,6 +188,10 @@ jobs:
           echo "=== Fixed dav1d.pc ==="
           cat "$PC_FILE"
           
+          # Verify the library exists
+          echo "=== Verifying libdav1d.so ==="
+          ls -la "$PREFIX_ABS/lib/libdav1d.so"* || true
+          
       - name: Clean before configure
         working-directory: ffmpeg-src
         run: |
@@ -199,15 +209,18 @@ jobs:
           # Setup pkg-config to find dav1d
           export PKG_CONFIG_LIBDIR="$PREFIX_ABS/lib/pkgconfig"
           export PKG_CONFIG_PATH="$PREFIX_ABS/lib/pkgconfig"
-          # Don't set PKG_CONFIG_SYSROOT_DIR as it causes path duplication
           
           # Test if pkg-config can find dav1d
           echo "=== Testing pkg-config ==="
           echo "PKG_CONFIG_LIBDIR=$PKG_CONFIG_LIBDIR"
-          pkg-config --list-all | grep dav1d || echo "dav1d not in pkg-config list"
+          pkg-config --exists dav1d && echo "dav1d found" || echo "dav1d NOT found"
           pkg-config --modversion dav1d || echo "Cannot get dav1d version"
           pkg-config --cflags dav1d || echo "Cannot get dav1d cflags"
           pkg-config --libs dav1d || echo "Cannot get dav1d libs"
+          
+          # Test if library file exists
+          echo "=== Checking library existence ==="
+          ls -la "$PREFIX_ABS/lib/libdav1d.so"* || true
           
           ac_cv_func_glob=no ./configure \
             --prefix="$PWD/../android-build/${{ matrix.abi }}" \
@@ -216,10 +229,12 @@ jobs:
             --cpu="${{ env.CPU }}" \
             --cross-prefix="${{ env.CROSS_PREFIX }}" \
             --cc="${{ env.CC }}" \
+            --cxx="${{ env.CXX }}" \
             --ar="${{ env.AR }}" \
             --ranlib="${{ env.RANLIB }}" \
             --strip="${{ env.STRIP }}" \
             --nm="${{ env.NM }}" \
+            --sysroot="${{ env.SYSROOT }}" \
             --enable-cross-compile \
             --enable-shared \
             --disable-static \
@@ -231,15 +246,19 @@ jobs:
             --enable-libdav1d \
             --enable-decoder=libdav1d \
             $( [ "${{ env.ARCH }}" = "arm64" -o "${{ env.ARCH }}" = "arm" ] && echo "--enable-neon" ) \
-            --extra-cflags="--sysroot=${{ env.SYSROOT }} -I$PREFIX_ABS/include" \
-            --extra-ldflags="--sysroot=${{ env.SYSROOT }} -L$PREFIX_ABS/lib -Wl,-z,max-page-size=16384 -Wl,--no-undefined -Wl,-rpath-link,$PREFIX_ABS/lib"
+            --extra-cflags="-I$PREFIX_ABS/include -fPIC" \
+            --extra-ldflags="-L$PREFIX_ABS/lib -Wl,-z,max-page-size=16384 -Wl,-rpath-link,$PREFIX_ABS/lib" \
+            --extra-libs="-ldav1d"
             
       - name: Show config.log on failure
         if: failure()
         working-directory: ffmpeg-src
         run: |
-          echo "=== Last 150 lines of config.log ==="
-          tail -150 ffbuild/config.log || true
+          echo "=== Searching for dav1d test in config.log ==="
+          grep -A 20 -B 5 "check_pkg_config libdav1d" ffbuild/config.log || true
+          echo ""
+          echo "=== Last 200 lines of config.log ==="
+          tail -200 ffbuild/config.log || true
           
       - name: Build FFmpeg for ${{ matrix.abi }}
         working-directory: ffmpeg-src
