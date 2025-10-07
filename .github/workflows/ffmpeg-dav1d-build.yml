@@ -90,14 +90,26 @@ jobs:
           echo "PKG_CONFIG_SYSROOT_DIR=" >> $GITHUB_ENV
 
       - name: Build dav1d (${{ matrix.abi }})
+        env:
+          ARCH: ${{ env.ARCH }}
+          CPU: ${{ env.CPU }}
+          CC: ${{ env.CC }}
+          AR: ${{ env.AR }}
+          RANLIB: ${{ env.RANLIB }}
+          STRIP: ${{ env.STRIP }}
+          SYSROOT: ${{ env.SYSROOT }}
+          CFLAGS_ABI: ${{ env.CFLAGS_ABI }}
         run: |
           set -e
-          DAV1D_VERSION=1.4.2
-          git clone --branch $DAV1D_VERSION --depth=1 https://code.videolan.org/videolan/dav1d.git
-          INSTALL_PREFIX="$GITHUB_WORKSPACE/dav1d/install-${{ matrix.abi }}"
-          mkdir -p "dav1d/build-${{ matrix.abi }}"
-          CROSS_FILE="dav1d/build-${{ matrix.abi }}/android-cross.txt"
-          cat > "$CROSS_FILE" <<EOF
+          DAV1D_VERSION=1.4.3
+          if [ ! -d dav1d ]; then
+            git clone https://code.videolan.org/videolan/dav1d.git
+          fi
+          cd dav1d
+          git fetch --tags
+          git checkout "tags/$DAV1D_VERSION"
+          # 生成 cross file
+          cat > cross-${{ matrix.abi }}.ini <<EOF
           [host_machine]
           system = 'android'
           cpu_family = '${ARCH}'
@@ -117,17 +129,23 @@ jobs:
           c_link_args = ['--sysroot=${SYSROOT}']
 
           [paths]
-          prefix = '${INSTALL_PREFIX}'
+          prefix = '$GITHUB_WORKSPACE/dav1d/install-${{ matrix.abi }}'
           libdir = 'lib'
           EOF
-          meson setup "dav1d/build-${{ matrix.abi }}" \
-            --cross-file "$CROSS_FILE" \
-            --prefix "$INSTALL_PREFIX" \
+          echo "=== cross file ==="
+          sed 's/^/| /' cross-${{ matrix.abi }}.ini
+          meson setup build-${{ matrix.abi }} \
+            --cross-file cross-${{ matrix.abi }}.ini \
+            --prefix "$GITHUB_WORKSPACE/dav1d/install-${{ matrix.abi }}" \
             --libdir lib \
             --buildtype release \
-            -Denable_tests=false -Denable_tools=false
-          ninja -C "dav1d/build-${{ matrix.abi }}"
-          ninja -C "dav1d/build-${{ matrix.abi }}" install
+            -Ddefault_library=static \
+            -Denable_tests=false \
+            -Denable_tools=false \
+            -Denable_asm=true
+          ninja -C build-${{ matrix.abi }}
+          ninja -C build-${{ matrix.abi }} install
+          ls -l "$GITHUB_WORKSPACE/dav1d/install-${{ matrix.abi }}/lib"
 
       - name: Clean FFmpeg tree
         working-directory: ffmpeg-src
@@ -142,18 +160,21 @@ jobs:
           set -e
           DAV1D_PREFIX="$GITHUB_WORKSPACE/dav1d/install-${{ matrix.abi }}"
           EXTRA_NEON=""
-          if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "arm" ]; then EXTRA_NEON="--enable-neon"; fi
+            # ARCH 来自上一步写入的环境变量
+          if [ "${ARCH}" = "arm64" ] || [ "${ARCH}" = "arm" ]; then EXTRA_NEON="--enable-neon"; fi
+          echo "Using dav1d in: $DAV1D_PREFIX"
+          ls -l "$DAV1D_PREFIX/lib"
           ac_cv_func_glob=no ./configure \
             --prefix="$PWD/../android-build/${{ matrix.abi }}" \
             --target-os=android \
-            --arch="$ARCH" \
-            --cpu="$CPU" \
-            --cross-prefix="$CROSS_PREFIX" \
-            --cc="$CC" \
-            --ar="$AR" \
-            --ranlib="$RANLIB" \
-            --strip="$STRIP" \
-            --nm="$NM" \
+            --arch="${ARCH}" \
+            --cpu="${CPU}" \
+            --cross-prefix="${CROSS_PREFIX}" \
+            --cc="${CC}" \
+            --ar="${AR}" \
+            --ranlib="${RANLIB}" \
+            --strip="${STRIP}" \
+            --nm="${NM}" \
             --enable-cross-compile \
             --enable-shared \
             --disable-static \
@@ -165,20 +186,21 @@ jobs:
             --pkg-config=false \
             --enable-libdav1d \
             $EXTRA_NEON \
-            --extra-cflags="--sysroot=$SYSROOT $CFLAGS_ABI -I$DAV1D_PREFIX/include" \
-            --extra-ldflags="--sysroot=$SYSROOT -L$DAV1D_PREFIX/lib -Wl,-z,max-page-size=16384 -Wl,--no-undefined"
+            --extra-cflags="--sysroot=${SYSROOT} ${CFLAGS_ABI} -I${DAV1D_PREFIX}/include" \
+            --extra-ldflags="--sysroot=${SYSROOT} -L${DAV1D_PREFIX}/lib -ldav1d -Wl,-z,max-page-size=16384 -Wl,--no-undefined"
 
       - name: Build FFmpeg (${{ matrix.abi }})
         working-directory: ffmpeg-src
         run: |
           set -e
-          make -j$(nproc)
-          make install
+          make -j$(nproc) V=1
+          make install V=1
 
       - name: Check no iconv
         run: |
           set -e
           for so in android-build/${{ matrix.abi }}/lib/*.so; do
+            echo "Check $so"
             if readelf -Ws "$so" | grep -E "UND.*iconv_"; then
               echo "iconv symbol found in $so"
               exit 1
@@ -189,6 +211,7 @@ jobs:
       - name: Copy config.h
         working-directory: ffmpeg-src
         run: |
+          set -e
           cp -v config.h ../android-build/${{ matrix.abi }}/config.h
 
       - name: Upload artifact (${{ matrix.abi }})
