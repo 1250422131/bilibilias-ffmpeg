@@ -1,4 +1,4 @@
-name: Build FFmpeg for Android (multi-ABI, shared, AV1 decode via dav1d)
+name: Build FFmpeg Android (dav1d AV1 decode)
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ on:
         required: true
         default: "r27"
       min-api-level:
-        description: "Min Android API level to build against (e.g. 26 for Android 8)"
+        description: "Min Android API level"
         required: true
         default: "26"
 
@@ -28,160 +28,111 @@ jobs:
       MIN_API_LEVEL: ${{ github.event.inputs.min-api-level || '26' }}
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install build dependencies
+      - name: Install deps
         run: |
+          set -e
           sudo dpkg --add-architecture i386
           sudo apt-get update
-          sudo apt-get install -y \
-            git wget unzip build-essential pkg-config yasm nasm binutils \
-            libc6:i386 libstdc++6:i386 lib32z1 gcc-multilib g++-multilib \
-            ninja-build meson python3 python3-pip
+          sudo apt-get install -y git wget unzip build-essential pkg-config yasm nasm binutils \
+            libc6:i386 libstdc++6:i386 lib32z1 gcc-multilib g++-multilib ninja-build meson python3
           nasm -v
-          readelf --version
           meson --version
           ninja --version
 
-      - name: Download Android NDK
+      - name: Download NDK
         run: |
+          set -e
           NDK_VER="${{ github.event.inputs.ndk-version || 'r27' }}"
           wget -q https://dl.google.com/android/repository/android-ndk-${NDK_VER}-linux.zip
           unzip -q -o android-ndk-${NDK_VER}-linux.zip
           echo "NDK=$PWD/android-ndk-${NDK_VER}" >> $GITHUB_ENV
-          echo "ANDROID_NDK_VERSION=${NDK_VER}" >> $GITHUB_ENV
 
       - name: Clone FFmpeg
         run: |
+          set -e
           git clone https://github.com/FFmpeg/FFmpeg ffmpeg-src
           cd ffmpeg-src
           git fetch --tags
-            # 如果 tag 不存在会失败
           git checkout ${{ github.event.inputs.ffmpeg-tag || 'n8.0' }}
-          git rev-parse --short HEAD
 
-      - name: Set up toolchain for ${{ matrix.abi }}
+      - name: Setup toolchain (${{ matrix.abi }})
         run: |
           set -e
           NDK="$PWD/android-ndk-${{ github.event.inputs.ndk-version || 'r27' }}"
           TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
-
           case "${{ matrix.abi }}" in
             arm64-v8a)
-              ARCH=arm64
-              CPU=armv8-a
-              TARGET_HOST=aarch64-linux-android
-              CROSS_PREFIX="$TOOLCHAIN/bin/aarch64-linux-android-"
-              CC="$TOOLCHAIN/bin/aarch64-linux-android${MIN_API_LEVEL}-clang"
-              CFLAGS_ABI="-march=armv8-a"
-              MESON_CPU_FAMILY=aarch64
-              MESON_CPU=armv8-a
+              ARCH=arm64; CPU=armv8-a; CROSS_PREFIX="$TOOLCHAIN/bin/aarch64-linux-android-"; CC="$TOOLCHAIN/bin/aarch64-linux-android${MIN_API_LEVEL}-clang"; CFLAGS_ABI="-march=armv8-a"
               ;;
             armeabi-v7a)
-              ARCH=arm
-              CPU=armv7-a
-              TARGET_HOST=armv7a-linux-androideabi
-              CROSS_PREFIX="$TOOLCHAIN/bin/arm-linux-androideabi-"
-              CC="$TOOLCHAIN/bin/armv7a-linux-androideabi${MIN_API_LEVEL}-clang"
-              # 提供 Neon 支持
-              CFLAGS_ABI="-march=armv7-a -mfpu=neon -mfloat-abi=softfp"
-              MESON_CPU_FAMILY=arm
-              MESON_CPU=armv7-a
+              ARCH=arm; CPU=armv7-a; CROSS_PREFIX="$TOOLCHAIN/bin/arm-linux-androideabi-"; CC="$TOOLCHAIN/bin/armv7a-linux-androideabi${MIN_API_LEVEL}-clang"; CFLAGS_ABI="-march=armv7-a -mfpu=neon -mfloat-abi=softfp"
               ;;
             x86_64)
-              ARCH=x86_64
-              CPU=x86-64
-              TARGET_HOST=x86_64-linux-android
-              CROSS_PREFIX="$TOOLCHAIN/bin/x86_64-linux-android-"
-              CC="$TOOLCHAIN/bin/x86_64-linux-android${MIN_API_LEVEL}-clang"
-              CFLAGS_ABI="-march=x86-64 -msse4.2"
-              MESON_CPU_FAMILY=x86_64
-              MESON_CPU=x86_64
+              ARCH=x86_64; CPU=x86-64; CROSS_PREFIX="$TOOLCHAIN/bin/x86_64-linux-android-"; CC="$TOOLCHAIN/bin/x86_64-linux-android${MIN_API_LEVEL}-clang"; CFLAGS_ABI="-march=x86-64"
               ;;
           esac
+          echo "ARCH=$ARCH" >> $GITHUB_ENV
+          echo "CPU=$CPU" >> $GITHUB_ENV
+          echo "CROSS_PREFIX=$CROSS_PREFIX" >> $GITHUB_ENV
+          echo "CC=$CC" >> $GITHUB_ENV
+          echo "AR=$TOOLCHAIN/bin/llvm-ar" >> $GITHUB_ENV
+          echo "RANLIB=$TOOLCHAIN/bin/llvm-ranlib" >> $GITHUB_ENV
+          echo "STRIP=$TOOLCHAIN/bin/llvm-strip" >> $GITHUB_ENV
+          echo "NM=$TOOLCHAIN/bin/llvm-nm" >> $GITHUB_ENV
+          echo "SYSROOT=$TOOLCHAIN/sysroot" >> $GITHUB_ENV
+          echo "CFLAGS_ABI=$CFLAGS_ABI" >> $GITHUB_ENV
+          echo "PKG_CONFIG=/usr/bin/false" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=" >> $GITHUB_ENV
+          echo "PKG_CONFIG_LIBDIR=" >> $GITHUB_ENV
+          echo "PKG_CONFIG_SYSROOT_DIR=" >> $GITHUB_ENV
 
-          AR="$TOOLCHAIN/bin/llvm-ar"
-          RANLIB="$TOOLCHAIN/bin/llvm-ranlib"
-          STRIP="$TOOLCHAIN/bin/llvm-strip"
-          NM="$TOOLCHAIN/bin/llvm-nm"
-          SYSROOT="$TOOLCHAIN/sysroot"
-
-          # 防止误用宿主机 pkg-config
-          PKG_CONFIG=/usr/bin/false
-          PKG_CONFIG_PATH=
-          PKG_CONFIG_LIBDIR=
-          PKG_CONFIG_SYSROOT_DIR=
-
-          {
-            echo "ARCH=$ARCH"
-            echo "CPU=$CPU"
-            echo "TARGET_HOST=$TARGET_HOST"
-            echo "CROSS_PREFIX=$CROSS_PREFIX"
-            echo "CC=$CC"
-            echo "AR=$AR"
-            echo "RANLIB=$RANLIB"
-            echo "STRIP=$STRIP"
-            echo "NM=$NM"
-            echo "SYSROOT=$SYSROOT"
-            echo "PKG_CONFIG=$PKG_CONFIG"
-            echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH"
-            echo "PKG_CONFIG_LIBDIR=$PKG_CONFIG_LIBDIR"
-            echo "PKG_CONFIG_SYSROOT_DIR=$PKG_CONFIG_SYSROOT_DIR"
-            echo "MESON_CPU_FAMILY=$MESON_CPU_FAMILY"
-            echo "MESON_CPU=$MESON_CPU"
-            echo "CFLAGS_ABI=$CFLAGS_ABI"
-          } >> $GITHUB_ENV
-
-      - name: Build dav1d for ${{ matrix.abi }}
+      - name: Build dav1d (${{ matrix.abi }})
         run: |
           set -e
           DAV1D_VERSION=1.4.2
           git clone --branch $DAV1D_VERSION --depth=1 https://code.videolan.org/videolan/dav1d.git
-          mkdir -p dav1d/build-${{ matrix.abi }}
           INSTALL_PREFIX="$GITHUB_WORKSPACE/dav1d/install-${{ matrix.abi }}"
+          mkdir -p "dav1d/build-${{ matrix.abi }}"
           CROSS_FILE="dav1d/build-${{ matrix.abi }}/android-cross.txt"
-
-          # 生成 Meson cross file
           cat > "$CROSS_FILE" <<EOF
-[host_machine]
-system = 'android'
-cpu_family = '${MESON_CPU_FAMILY}'
-cpu = '${MESON_CPU}'
-endian = 'little'
+          [host_machine]
+          system = 'android'
+          cpu_family = '${ARCH}'
+          cpu = '${CPU}'
+          endian = 'little'
 
-[binaries]
-c = '${CC}'
-ar = '${AR}'
-strip = '${STRIP}'
-pkgconfig = '/usr/bin/false'
+          [binaries]
+          c = '${CC}'
+          ar = '${AR}'
+          strip = '${STRIP}'
+          pkgconfig = '/usr/bin/false'
 
-[properties]
-needs_exe_wrapper = true
-sys_root = '${SYSROOT}'
-c_args = ['--sysroot=${SYSROOT}', '${CFLAGS_ABI}']
-c_link_args = ['--sysroot=${SYSROOT}']
+          [properties]
+          needs_exe_wrapper = true
+          sys_root = '${SYSROOT}'
+          c_args = ['--sysroot=${SYSROOT}', '${CFLAGS_ABI}']
+          c_link_args = ['--sysroot=${SYSROOT}']
 
-[paths]
-prefix = '${INSTALL_PREFIX}'
-libdir = 'lib'
-EOF
-
-          echo "===== Cross file generated ====="
-          cat "$CROSS_FILE"
-
-          meson setup dav1d/build-${{ matrix.abi }} \
+          [paths]
+          prefix = '${INSTALL_PREFIX}'
+          libdir = 'lib'
+          EOF
+          meson setup "dav1d/build-${{ matrix.abi }}" \
             --cross-file "$CROSS_FILE" \
             --prefix "$INSTALL_PREFIX" \
             --libdir lib \
             --buildtype release \
             -Denable_tests=false -Denable_tools=false
-          ninja -C dav1d/build-${{ matrix.abi }}
-          ninja -C dav1d/build-${{ matrix.abi }} install
+          ninja -C "dav1d/build-${{ matrix.abi }}"
+          ninja -C "dav1d/build-${{ matrix.abi }}" install
 
-      - name: Clean before FFmpeg configure
+      - name: Clean FFmpeg tree
         working-directory: ffmpeg-src
         run: |
+          set -e
           make distclean || true
           git clean -xdf || true
 
@@ -189,10 +140,9 @@ EOF
         working-directory: ffmpeg-src
         run: |
           set -e
-          mkdir -p ../android-build/${{ matrix.abi }}
           DAV1D_PREFIX="$GITHUB_WORKSPACE/dav1d/install-${{ matrix.abi }}"
-          echo "Using dav1d from: $DAV1D_PREFIX"
-
+          EXTRA_NEON=""
+          if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "arm" ]; then EXTRA_NEON="--enable-neon"; fi
           ac_cv_func_glob=no ./configure \
             --prefix="$PWD/../android-build/${{ matrix.abi }}" \
             --target-os=android \
@@ -214,7 +164,7 @@ EOF
             --disable-iconv \
             --pkg-config=false \
             --enable-libdav1d \
-            $( [ "$ARCH" = "arm64" -o "$ARCH" = "arm" ] && echo "--enable-neon" ) \
+            $EXTRA_NEON \
             --extra-cflags="--sysroot=$SYSROOT $CFLAGS_ABI -I$DAV1D_PREFIX/include" \
             --extra-ldflags="--sysroot=$SYSROOT -L$DAV1D_PREFIX/lib -Wl,-z,max-page-size=16384 -Wl,--no-undefined"
 
@@ -222,22 +172,19 @@ EOF
         working-directory: ffmpeg-src
         run: |
           set -e
-          make -j"$(nproc)"
-          make install V=1
+          make -j$(nproc)
+          make install
 
-      - name: Verify no iconv references remain
+      - name: Check no iconv
         run: |
           set -e
-          so_dir="android-build/${{ matrix.abi }}/lib"
-          test -d "$so_dir"
-          for so in "$so_dir"/*.so; do
-            echo "Checking undefined iconv symbols in: $so"
+          for so in android-build/${{ matrix.abi }}/lib/*.so; do
             if readelf -Ws "$so" | grep -E "UND.*iconv_"; then
-              echo "Error: $so still references iconv_* symbols"
+              echo "iconv symbol found in $so"
               exit 1
             fi
           done
-          echo "OK: No iconv references found."
+          echo "No iconv symbols."
 
       - name: Copy config.h
         working-directory: ffmpeg-src
