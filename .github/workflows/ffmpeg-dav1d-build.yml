@@ -43,6 +43,7 @@ jobs:
           nasm -v
           meson --version
           ninja --version
+          pkg-config --version
 
       - name: Download NDK
         run: |
@@ -81,7 +82,6 @@ jobs:
               CPU_CANON=armv7
               CROSS_PREFIX="$TOOLCHAIN/bin/arm-linux-androideabi-"
               CC="$TOOLCHAIN/bin/armv7a-linux-androideabi${MIN_API_LEVEL}-clang"
-              # 使用 thumb + neon（可选，不想用 thumb 可去掉 -mthumb）
               CFLAGS_LIST=("-march=armv7-a" "-mfpu=neon" "-mfloat-abi=softfp" "-mthumb" "-fPIC")
               ;;
             x86_64)
@@ -97,10 +97,10 @@ jobs:
           AR="$TOOLCHAIN/bin/llvm-ar"
           RANLIB="$TOOLCHAIN/bin/llvm-ranlib"
           STRIP="$TOOLCHAIN/bin/llvm-strip"
+            # 注意：NM 必须导出以便后续 configure
           NM="$TOOLCHAIN/bin/llvm-nm"
           SYSROOT="$TOOLCHAIN/sysroot"
 
-          # 展开成空格串供 FFmpeg 使用；Meson 用数组生成
           CFLAGS_ABI="${CFLAGS_LIST[*]}"
 
           {
@@ -141,7 +141,6 @@ jobs:
           INSTALL_PREFIX="$GITHUB_WORKSPACE/dav1d/install-${{ matrix.abi }}"
           CROSS_FILE="cross-${{ matrix.abi }}.meson"
 
-          # 将 CFLAGS_ABI 拆成单个元素，生成 c_args 列表
           IFS=' ' read -r -a CFLAGS_ARRAY <<< "$CFLAGS_ABI"
           C_ARGS_STR=""
           for f in "${CFLAGS_ARRAY[@]}"; do
@@ -171,10 +170,10 @@ jobs:
           c_link_args = ['--sysroot=${SYSROOT}']
           EOF
 
-          echo "===== Generated cross file ====="
+          echo "===== Cross file ====="
           sed 's/^/| /' "$CROSS_FILE"
 
-          echo "=== Quick test compile with raw clang (如果失败请贴日志) ==="
+          echo "=== quick test clang ==="
           echo 'int main(){}' > t.c
           set -x
           "${CC}" --sysroot="${SYSROOT}" ${CFLAGS_ABI} -c t.c -o t.o
@@ -193,6 +192,8 @@ jobs:
           ninja -C build-${{ matrix.abi }} -v
           ninja -C build-${{ matrix.abi }} install
           test -f "$INSTALL_PREFIX/lib/libdav1d.a"
+          echo "===== dav1d.pc ====="
+          sed 's/^/| /' "$INSTALL_PREFIX/lib/pkgconfig/dav1d.pc"
           ls -l "$INSTALL_PREFIX/lib"
 
       - name: Clean FFmpeg tree
@@ -209,6 +210,17 @@ jobs:
           DAV1D_PREFIX="$GITHUB_WORKSPACE/dav1d/install-${{ matrix.abi }}"
           echo "Using dav1d from $DAV1D_PREFIX"
           ls -l "$DAV1D_PREFIX/lib"
+
+          # 只暴露 dav1d 的 pkg-config
+          export PKG_CONFIG="$(command -v pkg-config)"
+          export PKG_CONFIG_PATH="$DAV1D_PREFIX/lib/pkgconfig"
+          export PKG_CONFIG_LIBDIR="$PKG_CONFIG_PATH"
+          unset PKG_CONFIG_SYSROOT_DIR
+
+          echo "PKG_CONFIG=$PKG_CONFIG"
+          echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH"
+          echo "--- pkg-config --modversion dav1d ---"
+          pkg-config --modversion dav1d || { echo "dav1d.pc not found"; exit 1; }
 
           EXTRA_NEON=""
           if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "arm" ]; then EXTRA_NEON="--enable-neon"; fi
@@ -232,11 +244,11 @@ jobs:
             --enable-pic \
             --disable-debug \
             --disable-iconv \
-            --pkg-config=false \
             --enable-libdav1d \
             $EXTRA_NEON \
             --extra-cflags="--sysroot=$SYSROOT $CFLAGS_ABI -I$DAV1D_PREFIX/include" \
-            --extra-ldflags="--sysroot=$SYSROOT -L$DAV1D_PREFIX/lib -ldav1d -Wl,-z,max-page-size=16384 -Wl,--no-undefined"
+            --extra-ldflags="--sysroot=$SYSROOT -L$DAV1D_PREFIX/lib -Wl,-z,max-page-size=16384 -Wl,--no-undefined" \
+            || { echo '--- config.log (tail) ---'; tail -n 200 ffbuild/config.log; exit 1; }
 
       - name: Build FFmpeg (${{ matrix.abi }})
         working-directory: ffmpeg-src
@@ -269,14 +281,10 @@ jobs:
           name: ffmpeg-android-${{ matrix.abi }}-api${{ env.MIN_API_LEVEL }}
           path: android-build/${{ matrix.abi }}
 
-      - name: (If dav1d failed) Dump meson log
+      - name: If failed dump dav1d meson log
         if: failure()
         run: |
           set -e
-          LOGDIR="dav1d/build-${{ matrix.abi }}/meson-logs"
-          if [ -d "$LOGDIR" ]; then
-            echo "===== meson-log.txt (tail) ====="
-            tail -n 120 "$LOGDIR/meson-log.txt" || true
-          else
-            echo "No meson log dir found."
-          fi
+          for d in dav1d/build-*/meson-logs/meson-log.txt; do
+            [ -f "$d" ] && { echo "=== $d ==="; tail -n 120 "$d"; }
+          done
