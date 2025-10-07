@@ -35,10 +35,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             git wget unzip build-essential pkg-config yasm nasm binutils \
-            libc6:i386 libstdc++6:i386 lib32z1 gcc-multilib g++-multilib
+            libc6:i386 libstdc++6:i386 lib32z1 gcc-multilib g++-multilib \
+            cmake ninja-build meson
           nasm -v
           readelf --version
-
       - name: Download Android NDK
         run: |
           NDK_VER="${{ github.event.inputs.ndk-version || 'r27' }}"
@@ -46,7 +46,6 @@ jobs:
           unzip -q -o android-ndk-${NDK_VER}-linux.zip
           echo "NDK=$PWD/android-ndk-${NDK_VER}" >> $GITHUB_ENV
           echo "ANDROID_NDK_VERSION=${NDK_VER}" >> $GITHUB_ENV
-
       - name: Clone FFmpeg
         run: |
           git clone https://github.com/FFmpeg/FFmpeg ffmpeg-src
@@ -54,13 +53,11 @@ jobs:
           git fetch --tags
           git checkout ${{ github.event.inputs.ffmpeg-tag || 'n8.0' }}
           git rev-parse --short HEAD
-
       - name: Set up toolchain for ${{ matrix.abi }}
         run: |
           set -e
           NDK="$PWD/android-ndk-${{ github.event.inputs.ndk-version || 'r27' }}"
           TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
-
           case "${{ matrix.abi }}" in
             arm64-v8a)
               export ARCH=arm64
@@ -84,19 +81,16 @@ jobs:
               export CC="$TOOLCHAIN/bin/x86_64-linux-android${MIN_API_LEVEL}-clang"
               ;;
           esac
-
           export AR="$TOOLCHAIN/bin/llvm-ar"
           export RANLIB="$TOOLCHAIN/bin/llvm-ranlib"
           export STRIP="$TOOLCHAIN/bin/llvm-strip"
           export NM="$TOOLCHAIN/bin/llvm-nm"
           export SYSROOT="$TOOLCHAIN/sysroot"
-
           # Isolate from host pkg-config to prevent accidental detection of host libs (like iconv)
           export PKG_CONFIG=/usr/bin/false
           export PKG_CONFIG_PATH=
           export PKG_CONFIG_LIBDIR=
           export PKG_CONFIG_SYSROOT_DIR=
-
           echo "ARCH=$ARCH" >> $GITHUB_ENV
           echo "CPU=$CPU" >> $GITHUB_ENV
           echo "TARGET_HOST=$TARGET_HOST" >> $GITHUB_ENV
@@ -111,14 +105,11 @@ jobs:
           echo "PKG_CONFIG_PATH=" >> $GITHUB_ENV
           echo "PKG_CONFIG_LIBDIR=" >> $GITHUB_ENV
           echo "PKG_CONFIG_SYSROOT_DIR=" >> $GITHUB_ENV
-
       - name: Clean before configure
         working-directory: ffmpeg-src
         run: |
           make distclean || true
           git clean -xdf || true
-
-
       - name: Build dav1d for ${{ matrix.abi }}
         run: |
           set -e
@@ -131,7 +122,6 @@ jobs:
           meson setup build --cross-file ../../ffmpeg-src/buildtools/meson/android-${{ matrix.abi }}.ini --prefix=$PWD/../../android-libs/${{ matrix.abi }} --libdir=lib --buildtype=release || true
           ninja -C build
           ninja -C build install
-
       - name: Build libaom for ${{ matrix.abi }}
         run: |
           set -e
@@ -150,7 +140,6 @@ jobs:
             -DCMAKE_INSTALL_PREFIX=$PWD/../../../android-libs/${{ matrix.abi }}
           make -j$(nproc)
           make install
-
       - name: Configure FFmpeg for ${{ matrix.abi }} (shared, disable iconv, 16KB page)
         working-directory: ffmpeg-src
         env:
@@ -195,15 +184,12 @@ jobs:
             $( [ "$ARCH" = "arm64" -o "$ARCH" = "arm" ] && echo "--enable-neon" ) \
             --extra-cflags="--sysroot=$SYSROOT -I$PWD/../android-libs/${{ matrix.abi }}/include" \
             --extra-ldflags="--sysroot=$SYSROOT -L$PWD/../android-libs/${{ matrix.abi }}/lib -Wl,-z,max-page-size=16384 -Wl,--no-undefined"
-
-
       - name: Build FFmpeg for ${{ matrix.abi }}
         working-directory: ffmpeg-src
         run: |
           set -e
           make -j"$(nproc)"
           make install V=1
-
       - name: Verify no iconv references remain
         run: |
           set -e
@@ -217,12 +203,10 @@ jobs:
             fi
           done
           echo "OK: No iconv references found."
-
       - name: Copy config.h to output dir
         working-directory: ffmpeg-src
         run: |
           cp -v config.h ../android-build/${{ matrix.abi }}/config.h
-
       - name: Upload ${{ matrix.abi }} build artifact
         uses: actions/upload-artifact@v4
         with:
