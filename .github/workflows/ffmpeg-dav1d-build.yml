@@ -36,7 +36,7 @@ jobs:
           sudo apt-get install -y \
             git wget unzip build-essential pkg-config yasm nasm binutils \
             libc6:i386 libstdc++6:i386 lib32z1 gcc-multilib g++-multilib \
-            cmake ninja-build meson python3-pip
+            ninja-build meson python3-pip
           nasm -v
           readelf --version
           
@@ -95,11 +95,6 @@ jobs:
           export STRIP="$TOOLCHAIN/bin/llvm-strip"
           export NM="$TOOLCHAIN/bin/llvm-nm"
           export SYSROOT="$TOOLCHAIN/sysroot"
-          # Isolate from host pkg-config
-          export PKG_CONFIG=/usr/bin/false
-          export PKG_CONFIG_PATH=
-          export PKG_CONFIG_LIBDIR=
-          export PKG_CONFIG_SYSROOT_DIR=
           
           echo "ARCH=$ARCH" >> $GITHUB_ENV
           echo "CPU=$CPU" >> $GITHUB_ENV
@@ -111,12 +106,8 @@ jobs:
           echo "STRIP=$STRIP" >> $GITHUB_ENV
           echo "NM=$NM" >> $GITHUB_ENV
           echo "SYSROOT=$SYSROOT" >> $GITHUB_ENV
-          echo "PKG_CONFIG=$PKG_CONFIG" >> $GITHUB_ENV
           echo "MESON_CPU_FAMILY=$MESON_CPU_FAMILY" >> $GITHUB_ENV
           echo "MESON_CPU=$MESON_CPU" >> $GITHUB_ENV
-          echo "PKG_CONFIG_PATH=" >> $GITHUB_ENV
-          echo "PKG_CONFIG_LIBDIR=" >> $GITHUB_ENV
-          echo "PKG_CONFIG_SYSROOT_DIR=" >> $GITHUB_ENV
           
       - name: Create meson cross-file for ${{ matrix.abi }}
         run: |
@@ -147,7 +138,7 @@ jobs:
           EOF
           cat meson-cross/android-${{ matrix.abi }}.ini
           
-      - name: Build dav1d for ${{ matrix.abi }}
+      - name: Build dav1d (AV1 decoder) for ${{ matrix.abi }}
         run: |
           set -e
           DAV1D_VER=1.2.1
@@ -166,42 +157,19 @@ jobs:
           ninja -C build
           ninja -C build install
           
-      - name: Build libaom for ${{ matrix.abi }}
-        run: |
-          set -e
-          AOM_VER=v3.9.0
-          mkdir -p deps && cd deps
-          if [ ! -d aom ]; then
-            git clone --branch $AOM_VER --depth 1 https://aomedia.googlesource.com/aom
-          fi
-          cd aom
-          rm -rf build
-          mkdir -p build && cd build
-          cmake .. \
-            -DCMAKE_TOOLCHAIN_FILE=$NDK/build/cmake/android.toolchain.cmake \
-            -DANDROID_ABI=${{ matrix.abi }} \
-            -DANDROID_PLATFORM=android-${{ env.MIN_API_LEVEL }} \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_SHARED_LIBS=ON \
-            -DENABLE_TESTS=OFF \
-            -DENABLE_EXAMPLES=OFF \
-            -DCMAKE_INSTALL_PREFIX=$PWD/../../../android-libs/${{ matrix.abi }}
-          make -j$(nproc)
-          make install
-          
       - name: Clean before configure
         working-directory: ffmpeg-src
         run: |
           make distclean || true
           git clean -xdf || true
           
-      - name: Configure FFmpeg for ${{ matrix.abi }} (shared, disable iconv, 16KB page)
+      - name: Configure FFmpeg for ${{ matrix.abi }} (shared, AV1 decode only)
         working-directory: ffmpeg-src
         run: |
           set -e
           mkdir -p ../android-build/${{ matrix.abi }}
           
-          # Set PKG_CONFIG_PATH to find dav1d and libaom
+          # Set PKG_CONFIG_PATH to find dav1d
           export PKG_CONFIG_LIBDIR="$PWD/../android-libs/${{ matrix.abi }}/lib/pkgconfig"
           export PKG_CONFIG_PATH="$PKG_CONFIG_LIBDIR"
           export PKG_CONFIG_SYSROOT_DIR="$PWD/../android-libs/${{ matrix.abi }}"
@@ -225,8 +193,8 @@ jobs:
             --enable-pic \
             --disable-debug \
             --disable-iconv \
-            --enable-libaom \
             --enable-libdav1d \
+            --enable-decoder=libdav1d \
             $( [ "${{ env.ARCH }}" = "arm64" -o "${{ env.ARCH }}" = "arm" ] && echo "--enable-neon" ) \
             --extra-cflags="--sysroot=${{ env.SYSROOT }} -I$PWD/../android-libs/${{ matrix.abi }}/include" \
             --extra-ldflags="--sysroot=${{ env.SYSROOT }} -L$PWD/../android-libs/${{ matrix.abi }}/lib -Wl,-z,max-page-size=16384 -Wl,--no-undefined -Wl,-rpath-link,$PWD/../android-libs/${{ matrix.abi }}/lib"
@@ -238,10 +206,18 @@ jobs:
           make -j"$(nproc)"
           make install V=1
           
-      - name: Copy dependency libraries to output
+      - name: Copy dav1d library to output
         run: |
           set -e
-          cp -v android-libs/${{ matrix.abi }}/lib/*.so android-build/${{ matrix.abi }}/lib/ || true
+          cp -v android-libs/${{ matrix.abi }}/lib/libdav1d.so* android-build/${{ matrix.abi }}/lib/ || true
+          
+      - name: Verify AV1 decoder is enabled
+        working-directory: ffmpeg-src
+        run: |
+          set -e
+          echo "=== Checking if libdav1d decoder is enabled ==="
+          grep -i "CONFIG_LIBDAV1D" config.h || echo "WARNING: libdav1d not found in config.h"
+          grep -i "dav1d" config.h | head -20
           
       - name: Verify no iconv references remain
         run: |
@@ -256,6 +232,17 @@ jobs:
             fi
           done
           echo "OK: No iconv references found."
+          
+      - name: List built libraries
+        run: |
+          echo "=== Built FFmpeg libraries ==="
+          ls -lh android-build/${{ matrix.abi }}/lib/
+          echo ""
+          echo "=== Library dependencies ==="
+          for so in android-build/${{ matrix.abi }}/lib/libav*.so; do
+            echo "--- $so ---"
+            readelf -d "$so" | grep NEEDED || true
+          done
           
       - name: Copy config.h to output dir
         working-directory: ffmpeg-src
