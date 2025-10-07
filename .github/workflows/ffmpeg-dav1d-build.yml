@@ -116,6 +116,18 @@ jobs:
           echo "MESON_CPU_FAMILY=$MESON_CPU_FAMILY" >> $GITHUB_ENV
           echo "MESON_CPU=$MESON_CPU" >> $GITHUB_ENV
           
+      - name: Create pkg-config wrapper for dav1d build
+        run: |
+          # Create a fake pkg-config for dav1d build that returns nothing
+          # (dav1d doesn't need to find external libs during cross-compile)
+          mkdir -p bin
+          cat > bin/pkg-config-fake <<'EOF'
+          #!/bin/bash
+          exit 1
+          EOF
+          chmod +x bin/pkg-config-fake
+          echo "PKG_CONFIG_FAKE=$PWD/bin/pkg-config-fake" >> $GITHUB_ENV
+          
       - name: Create meson cross-file for ${{ matrix.abi }}
         run: |
           set -e
@@ -126,7 +138,7 @@ jobs:
           cpp = '${{ env.CXX }}'
           ar = '${{ env.AR }}'
           strip = '${{ env.STRIP }}'
-          pkgconfig = '/usr/bin/false'
+          pkgconfig = '${{ env.PKG_CONFIG_FAKE }}'
 
           [host_machine]
           system = 'android'
@@ -207,17 +219,19 @@ jobs:
           
           PREFIX_ABS="$PWD/../android-libs/${{ matrix.abi }}"
           
-          # Setup pkg-config to find dav1d
+          # Setup pkg-config to find dav1d - use real pkg-config here, not fake
+          export PKG_CONFIG=/usr/bin/pkg-config
           export PKG_CONFIG_LIBDIR="$PREFIX_ABS/lib/pkgconfig"
           export PKG_CONFIG_PATH="$PREFIX_ABS/lib/pkgconfig"
           
           # Test if pkg-config can find dav1d
           echo "=== Testing pkg-config ==="
+          echo "PKG_CONFIG=$PKG_CONFIG"
           echo "PKG_CONFIG_LIBDIR=$PKG_CONFIG_LIBDIR"
-          pkg-config --exists dav1d && echo "dav1d found" || echo "dav1d NOT found"
-          pkg-config --modversion dav1d
-          pkg-config --cflags dav1d
-          pkg-config --libs dav1d
+          $PKG_CONFIG --exists dav1d && echo "dav1d found" || echo "dav1d NOT found"
+          $PKG_CONFIG --modversion dav1d
+          $PKG_CONFIG --cflags dav1d
+          $PKG_CONFIG --libs dav1d
           
           ac_cv_func_glob=no ./configure \
             --prefix="$PWD/../android-build/${{ matrix.abi }}" \
@@ -231,6 +245,7 @@ jobs:
             --ranlib="${{ env.RANLIB }}" \
             --strip="${{ env.STRIP }}" \
             --nm="${{ env.NM }}" \
+            --pkg-config="$PKG_CONFIG" \
             --sysroot="${{ env.SYSROOT }}" \
             --enable-cross-compile \
             --enable-shared \
