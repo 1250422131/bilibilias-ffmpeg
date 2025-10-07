@@ -1,4 +1,4 @@
-name: Build AV1 FFmpeg for Android (multi-ABI, shared, 16KB page)
+name: Build FFmpeg + Dav1d  for Android (multi-ABI, shared, 16KB page)
 
 on:
   workflow_dispatch:
