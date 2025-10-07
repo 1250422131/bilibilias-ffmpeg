@@ -181,8 +181,10 @@ jobs:
           Name: dav1d
           Description: AV1 decoding library
           Version: 1.2.1
-          Cflags: -I\${includedir}
+          Requires.private: 
           Libs: -L\${libdir} -ldav1d
+          Libs.private: -lpthread -ldl -lm
+          Cflags: -I\${includedir}
           EOF
           
           echo "=== Fixed dav1d.pc ==="
@@ -191,6 +193,7 @@ jobs:
           # Verify the library exists
           echo "=== Verifying libdav1d.so ==="
           ls -la "$PREFIX_ABS/lib/libdav1d.so"* || true
+          file "$PREFIX_ABS/lib/libdav1d.so" || true
           
       - name: Clean before configure
         working-directory: ffmpeg-src
@@ -200,6 +203,7 @@ jobs:
           
       - name: Configure FFmpeg for ${{ matrix.abi }} (shared, AV1 decode only)
         working-directory: ffmpeg-src
+        continue-on-error: true
         run: |
           set -e
           mkdir -p ../android-build/${{ matrix.abi }}
@@ -248,17 +252,20 @@ jobs:
             $( [ "${{ env.ARCH }}" = "arm64" -o "${{ env.ARCH }}" = "arm" ] && echo "--enable-neon" ) \
             --extra-cflags="-I$PREFIX_ABS/include -fPIC" \
             --extra-ldflags="-L$PREFIX_ABS/lib -Wl,-z,max-page-size=16384 -Wl,-rpath-link,$PREFIX_ABS/lib" \
-            --extra-libs="-ldav1d"
-            
-      - name: Show config.log on failure
-        if: failure()
+            --extra-libs="-ldav1d -lpthread -ldl -lm"
+          
+      - name: Show dav1d detection details from config.log
+        if: always()
         working-directory: ffmpeg-src
         run: |
-          echo "=== Searching for dav1d test in config.log ==="
-          grep -A 20 -B 5 "check_pkg_config libdav1d" ffbuild/config.log || true
+          echo "=== Searching for libdav1d check in config.log ==="
+          grep -A 50 "check_pkg_config libdav1d" ffbuild/config.log || echo "Pattern not found"
           echo ""
-          echo "=== Last 200 lines of config.log ==="
-          tail -200 ffbuild/config.log || true
+          echo "=== Searching for any dav1d mention ==="
+          grep -i "dav1d" ffbuild/config.log | head -50 || echo "No dav1d mentions"
+          echo ""
+          echo "=== Showing test compilation errors ==="
+          grep -A 10 "test_ld cc" ffbuild/config.log | tail -100 || true
           
       - name: Build FFmpeg for ${{ matrix.abi }}
         working-directory: ffmpeg-src
