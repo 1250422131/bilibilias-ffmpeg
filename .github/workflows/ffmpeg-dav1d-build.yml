@@ -39,6 +39,7 @@ jobs:
             ninja-build meson python3-pip
           nasm -v
           readelf --version
+          pkg-config --version
           
       - name: Download Android NDK
         run: |
@@ -157,6 +158,12 @@ jobs:
           ninja -C build
           ninja -C build install
           
+          # Verify installation
+          echo "=== dav1d installation check ==="
+          ls -la ../../android-libs/${{ matrix.abi }}/lib/
+          ls -la ../../android-libs/${{ matrix.abi }}/lib/pkgconfig/
+          cat ../../android-libs/${{ matrix.abi }}/lib/pkgconfig/dav1d.pc
+          
       - name: Clean before configure
         working-directory: ffmpeg-src
         run: |
@@ -169,10 +176,17 @@ jobs:
           set -e
           mkdir -p ../android-build/${{ matrix.abi }}
           
-          # Set PKG_CONFIG_PATH to find dav1d
+          # Setup pkg-config to find dav1d
           export PKG_CONFIG_LIBDIR="$PWD/../android-libs/${{ matrix.abi }}/lib/pkgconfig"
           export PKG_CONFIG_PATH="$PKG_CONFIG_LIBDIR"
           export PKG_CONFIG_SYSROOT_DIR="$PWD/../android-libs/${{ matrix.abi }}"
+          
+          # Test if pkg-config can find dav1d
+          echo "=== Testing pkg-config ==="
+          pkg-config --list-all | grep dav1d || echo "dav1d not in pkg-config list"
+          pkg-config --modversion dav1d || echo "Cannot get dav1d version"
+          pkg-config --cflags dav1d || echo "Cannot get dav1d cflags"
+          pkg-config --libs dav1d || echo "Cannot get dav1d libs"
           
           ac_cv_func_glob=no ./configure \
             --prefix="$PWD/../android-build/${{ matrix.abi }}" \
@@ -199,6 +213,13 @@ jobs:
             --extra-cflags="--sysroot=${{ env.SYSROOT }} -I$PWD/../android-libs/${{ matrix.abi }}/include" \
             --extra-ldflags="--sysroot=${{ env.SYSROOT }} -L$PWD/../android-libs/${{ matrix.abi }}/lib -Wl,-z,max-page-size=16384 -Wl,--no-undefined -Wl,-rpath-link,$PWD/../android-libs/${{ matrix.abi }}/lib"
             
+      - name: Show config.log on failure
+        if: failure()
+        working-directory: ffmpeg-src
+        run: |
+          echo "=== Last 100 lines of config.log ==="
+          tail -100 ffbuild/config.log || true
+          
       - name: Build FFmpeg for ${{ matrix.abi }}
         working-directory: ffmpeg-src
         run: |
