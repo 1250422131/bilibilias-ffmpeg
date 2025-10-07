@@ -23,8 +23,10 @@ jobs:
       fail-fast: false
       matrix:
         abi: [arm64-v8a, armeabi-v7a, x86_64]
+
     env:
       MIN_API_LEVEL: ${{ github.event.inputs.min-api-level || '26' }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -39,6 +41,8 @@ jobs:
             ninja-build meson python3 python3-pip
           nasm -v
           readelf --version
+          meson --version
+          ninja --version
 
       - name: Download Android NDK
         run: |
@@ -53,77 +57,81 @@ jobs:
           git clone https://github.com/FFmpeg/FFmpeg ffmpeg-src
           cd ffmpeg-src
           git fetch --tags
+            # 如果 tag 不存在会失败
           git checkout ${{ github.event.inputs.ffmpeg-tag || 'n8.0' }}
           git rev-parse --short HEAD
 
-      - name: Set up toolchain for ${{ matrix.abi }} and export env
+      - name: Set up toolchain for ${{ matrix.abi }}
         run: |
           set -e
           NDK="$PWD/android-ndk-${{ github.event.inputs.ndk-version || 'r27' }}"
           TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
+
           case "${{ matrix.abi }}" in
             arm64-v8a)
-              export ARCH=arm64
-              export CPU=armv8-a
-              export TARGET_HOST=aarch64-linux-android
-              export CROSS_PREFIX="$TOOLCHAIN/bin/aarch64-linux-android-"
-              export CC="$TOOLCHAIN/bin/aarch64-linux-android${MIN_API_LEVEL}-clang"
-              export MESON_CPU_FAMILY=aarch64
-              export MESON_CPU=armv8-a
-              export MESON_CC="$CC"
-              export MESON_CROSS_PREFIX="$TOOLCHAIN/bin/aarch64-linux-android-"
+              ARCH=arm64
+              CPU=armv8-a
+              TARGET_HOST=aarch64-linux-android
+              CROSS_PREFIX="$TOOLCHAIN/bin/aarch64-linux-android-"
+              CC="$TOOLCHAIN/bin/aarch64-linux-android${MIN_API_LEVEL}-clang"
+              CFLAGS_ABI="-march=armv8-a"
+              MESON_CPU_FAMILY=aarch64
+              MESON_CPU=armv8-a
               ;;
             armeabi-v7a)
-              export ARCH=arm
-              export CPU=armv7-a
-              export TARGET_HOST=armv7a-linux-androideabi
-              export CROSS_PREFIX="$TOOLCHAIN/bin/arm-linux-androideabi-"
-              export CC="$TOOLCHAIN/bin/armv7a-linux-androideabi${MIN_API_LEVEL}-clang"
-              export MESON_CPU_FAMILY=arm
-              export MESON_CPU=armv7-a
-              export MESON_CC="$CC"
-              export MESON_CROSS_PREFIX="$TOOLCHAIN/bin/arm-linux-androideabi-"
+              ARCH=arm
+              CPU=armv7-a
+              TARGET_HOST=armv7a-linux-androideabi
+              CROSS_PREFIX="$TOOLCHAIN/bin/arm-linux-androideabi-"
+              CC="$TOOLCHAIN/bin/armv7a-linux-androideabi${MIN_API_LEVEL}-clang"
+              # 提供 Neon 支持
+              CFLAGS_ABI="-march=armv7-a -mfpu=neon -mfloat-abi=softfp"
+              MESON_CPU_FAMILY=arm
+              MESON_CPU=armv7-a
               ;;
             x86_64)
-              export ARCH=x86_64
-              export CPU=x86-64
-              export TARGET_HOST=x86_64-linux-android
-              export CROSS_PREFIX="$TOOLCHAIN/bin/x86_64-linux-android-"
-              export CC="$TOOLCHAIN/bin/x86_64-linux-android${MIN_API_LEVEL}-clang"
-              export MESON_CPU_FAMILY=x86_64
-              export MESON_CPU=x86_64
-              export MESON_CC="$CC"
-              export MESON_CROSS_PREFIX="$TOOLCHAIN/bin/x86_64-linux-android-"
+              ARCH=x86_64
+              CPU=x86-64
+              TARGET_HOST=x86_64-linux-android
+              CROSS_PREFIX="$TOOLCHAIN/bin/x86_64-linux-android-"
+              CC="$TOOLCHAIN/bin/x86_64-linux-android${MIN_API_LEVEL}-clang"
+              CFLAGS_ABI="-march=x86-64 -msse4.2"
+              MESON_CPU_FAMILY=x86_64
+              MESON_CPU=x86_64
               ;;
           esac
-          export AR="$TOOLCHAIN/bin/llvm-ar"
-          export RANLIB="$TOOLCHAIN/bin/llvm-ranlib"
-          export STRIP="$TOOLCHAIN/bin/llvm-strip"
-          export NM="$TOOLCHAIN/bin/llvm-nm"
-          export SYSROOT="$TOOLCHAIN/sysroot"
-          # Isolate from host pkg-config to prevent accidental detection of host libs (like iconv)
-          export PKG_CONFIG=/usr/bin/false
-          export PKG_CONFIG_PATH=
-          export PKG_CONFIG_LIBDIR=
-          export PKG_CONFIG_SYSROOT_DIR=
-          echo "ARCH=$ARCH" >> $GITHUB_ENV
-          echo "CPU=$CPU" >> $GITHUB_ENV
-          echo "TARGET_HOST=$TARGET_HOST" >> $GITHUB_ENV
-          echo "CROSS_PREFIX=$CROSS_PREFIX" >> $GITHUB_ENV
-          echo "CC=$CC" >> $GITHUB_ENV
-          echo "AR=$AR" >> $GITHUB_ENV
-          echo "RANLIB=$RANLIB" >> $GITHUB_ENV
-          echo "STRIP=$STRIP" >> $GITHUB_ENV
-          echo "NM=$NM" >> $GITHUB_ENV
-          echo "SYSROOT=$SYSROOT" >> $GITHUB_ENV
-          echo "PKG_CONFIG=$PKG_CONFIG" >> $GITHUB_ENV
-          echo "PKG_CONFIG_PATH=" >> $GITHUB_ENV
-          echo "PKG_CONFIG_LIBDIR=" >> $GITHUB_ENV
-          echo "PKG_CONFIG_SYSROOT_DIR=" >> $GITHUB_ENV
-          echo "MESON_CPU_FAMILY=$MESON_CPU_FAMILY" >> $GITHUB_ENV
-          echo "MESON_CPU=$MESON_CPU" >> $GITHUB_ENV
-          echo "MESON_CC=$MESON_CC" >> $GITHUB_ENV
-          echo "MESON_CROSS_PREFIX=$MESON_CROSS_PREFIX" >> $GITHUB_ENV
+
+          AR="$TOOLCHAIN/bin/llvm-ar"
+          RANLIB="$TOOLCHAIN/bin/llvm-ranlib"
+          STRIP="$TOOLCHAIN/bin/llvm-strip"
+          NM="$TOOLCHAIN/bin/llvm-nm"
+          SYSROOT="$TOOLCHAIN/sysroot"
+
+          # 防止误用宿主机 pkg-config
+          PKG_CONFIG=/usr/bin/false
+          PKG_CONFIG_PATH=
+          PKG_CONFIG_LIBDIR=
+          PKG_CONFIG_SYSROOT_DIR=
+
+          {
+            echo "ARCH=$ARCH"
+            echo "CPU=$CPU"
+            echo "TARGET_HOST=$TARGET_HOST"
+            echo "CROSS_PREFIX=$CROSS_PREFIX"
+            echo "CC=$CC"
+            echo "AR=$AR"
+            echo "RANLIB=$RANLIB"
+            echo "STRIP=$STRIP"
+            echo "NM=$NM"
+            echo "SYSROOT=$SYSROOT"
+            echo "PKG_CONFIG=$PKG_CONFIG"
+            echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH"
+            echo "PKG_CONFIG_LIBDIR=$PKG_CONFIG_LIBDIR"
+            echo "PKG_CONFIG_SYSROOT_DIR=$PKG_CONFIG_SYSROOT_DIR"
+            echo "MESON_CPU_FAMILY=$MESON_CPU_FAMILY"
+            echo "MESON_CPU=$MESON_CPU"
+            echo "CFLAGS_ABI=$CFLAGS_ABI"
+          } >> $GITHUB_ENV
 
       - name: Build dav1d for ${{ matrix.abi }}
         run: |
@@ -131,67 +139,60 @@ jobs:
           DAV1D_VERSION=1.4.2
           git clone --branch $DAV1D_VERSION --depth=1 https://code.videolan.org/videolan/dav1d.git
           mkdir -p dav1d/build-${{ matrix.abi }}
-          # 自动生成 meson cross 文件
-          cat <<EOF >dav1d/build-${{ matrix.abi }}/android-cross.txt
+          INSTALL_PREFIX="$GITHUB_WORKSPACE/dav1d/install-${{ matrix.abi }}"
+          CROSS_FILE="dav1d/build-${{ matrix.abi }}/android-cross.txt"
+
+          # 生成 Meson cross file
+          cat > "$CROSS_FILE" <<EOF
 [host_machine]
 system = 'android'
-cpu_family = '${{ env.MESON_CPU_FAMILY }}'
-cpu = '${{ env.MESON_CPU }}'
+cpu_family = '${MESON_CPU_FAMILY}'
+cpu = '${MESON_CPU}'
 endian = 'little'
 
 [binaries]
-c = '${{ env.MESON_CC }}'
-ar = '${{ env.AR }}'
-strip = '${{ env.STRIP }}'
+c = '${CC}'
+ar = '${AR}'
+strip = '${STRIP}'
 pkgconfig = '/usr/bin/false'
 
 [properties]
 needs_exe_wrapper = true
-root = '${{ env.SYSROOT }}'
-sys_root = '${{ env.SYSROOT }}'
-c_args = ['--sysroot=${{ env.SYSROOT }}']
-c_link_args = ['--sysroot=${{ env.SYSROOT }}']
+sys_root = '${SYSROOT}'
+c_args = ['--sysroot=${SYSROOT}', '${CFLAGS_ABI}']
+c_link_args = ['--sysroot=${SYSROOT}']
 
 [paths]
-prefix = '$GITHUB_WORKSPACE/dav1d/install-${{ matrix.abi }}'
+prefix = '${INSTALL_PREFIX}'
 libdir = 'lib'
 EOF
 
-          cd dav1d
-          meson setup build-${{ matrix.abi }} \
-            --cross-file build-${{ matrix.abi }}/android-cross.txt \
-            --prefix $GITHUB_WORKSPACE/dav1d/install-${{ matrix.abi }} \
+          echo "===== Cross file generated ====="
+          cat "$CROSS_FILE"
+
+          meson setup dav1d/build-${{ matrix.abi }} \
+            --cross-file "$CROSS_FILE" \
+            --prefix "$INSTALL_PREFIX" \
             --libdir lib \
             --buildtype release \
-            -Denable_tools=false -Denable_tests=false
-          ninja -C build-${{ matrix.abi }}
-          ninja -C build-${{ matrix.abi }} install
+            -Denable_tests=false -Denable_tools=false
+          ninja -C dav1d/build-${{ matrix.abi }}
+          ninja -C dav1d/build-${{ matrix.abi }} install
 
-      - name: Clean before configure
+      - name: Clean before FFmpeg configure
         working-directory: ffmpeg-src
         run: |
           make distclean || true
           git clean -xdf || true
 
-      - name: Configure FFmpeg for ${{ matrix.abi }} (shared, AV1 decode)
+      - name: Configure FFmpeg (${{ matrix.abi }})
         working-directory: ffmpeg-src
-        env:
-          ARCH: ${{ env.ARCH }}
-          CPU: ${{ env.CPU }}
-          CROSS_PREFIX: ${{ env.CROSS_PREFIX }}
-          CC: ${{ env.CC }}
-          AR: ${{ env.AR }}
-          RANLIB: ${{ env.RANLIB }}
-          STRIP: ${{ env.STRIP }}
-          NM: ${{ env.NM }}
-          SYSROOT: ${{ env.SYSROOT }}
-          PKG_CONFIG: ${{ env.PKG_CONFIG }}
-          PKG_CONFIG_PATH: ${{ env.PKG_CONFIG_PATH }}
-          PKG_CONFIG_LIBDIR: ${{ env.PKG_CONFIG_LIBDIR }}
-          PKG_CONFIG_SYSROOT_DIR: ${{ env.PKG_CONFIG_SYSROOT_DIR }}
         run: |
           set -e
           mkdir -p ../android-build/${{ matrix.abi }}
+          DAV1D_PREFIX="$GITHUB_WORKSPACE/dav1d/install-${{ matrix.abi }}"
+          echo "Using dav1d from: $DAV1D_PREFIX"
+
           ac_cv_func_glob=no ./configure \
             --prefix="$PWD/../android-build/${{ matrix.abi }}" \
             --target-os=android \
@@ -213,10 +214,11 @@ EOF
             --disable-iconv \
             --pkg-config=false \
             --enable-libdav1d \
-            --extra-cflags="--sysroot=$SYSROOT -I$GITHUB_WORKSPACE/dav1d/install-${{ matrix.abi }}/include" \
-            --extra-ldflags="--sysroot=$SYSROOT -L$GITHUB_WORKSPACE/dav1d/install-${{ matrix.abi }}/lib -Wl,-z,max-page-size=16384 -Wl,--no-undefined"
+            $( [ "$ARCH" = "arm64" -o "$ARCH" = "arm" ] && echo "--enable-neon" ) \
+            --extra-cflags="--sysroot=$SYSROOT $CFLAGS_ABI -I$DAV1D_PREFIX/include" \
+            --extra-ldflags="--sysroot=$SYSROOT -L$DAV1D_PREFIX/lib -Wl,-z,max-page-size=16384 -Wl,--no-undefined"
 
-      - name: Build FFmpeg for ${{ matrix.abi }}
+      - name: Build FFmpeg (${{ matrix.abi }})
         working-directory: ffmpeg-src
         run: |
           set -e
@@ -237,12 +239,12 @@ EOF
           done
           echo "OK: No iconv references found."
 
-      - name: Copy config.h to output dir
+      - name: Copy config.h
         working-directory: ffmpeg-src
         run: |
           cp -v config.h ../android-build/${{ matrix.abi }}/config.h
 
-      - name: Upload ${{ matrix.abi }} build artifact
+      - name: Upload artifact (${{ matrix.abi }})
         uses: actions/upload-artifact@v4
         with:
           name: ffmpeg-android-${{ matrix.abi }}-api${{ env.MIN_API_LEVEL }}
