@@ -166,12 +166,12 @@ jobs:
           ninja -C build
           ninja -C build install
           
-          # Fix pkg-config file to use relative paths
+          # Fix pkg-config file - Android doesn't need -lpthread (it's in libc)
           PC_FILE="$PREFIX_ABS/lib/pkgconfig/dav1d.pc"
           echo "=== Original dav1d.pc ==="
           cat "$PC_FILE"
           
-          # Create a corrected .pc file
+          # Create a corrected .pc file without pthread
           cat > "$PC_FILE" <<EOF
           prefix=$PREFIX_ABS
           exec_prefix=\${prefix}
@@ -181,9 +181,8 @@ jobs:
           Name: dav1d
           Description: AV1 decoding library
           Version: 1.2.1
-          Requires.private: 
           Libs: -L\${libdir} -ldav1d
-          Libs.private: -lpthread -ldl -lm
+          Libs.private: -ldl -lm
           Cflags: -I\${includedir}
           EOF
           
@@ -193,7 +192,6 @@ jobs:
           # Verify the library exists
           echo "=== Verifying libdav1d.so ==="
           ls -la "$PREFIX_ABS/lib/libdav1d.so"* || true
-          file "$PREFIX_ABS/lib/libdav1d.so" || true
           
       - name: Clean before configure
         working-directory: ffmpeg-src
@@ -203,7 +201,6 @@ jobs:
           
       - name: Configure FFmpeg for ${{ matrix.abi }} (shared, AV1 decode only)
         working-directory: ffmpeg-src
-        continue-on-error: true
         run: |
           set -e
           mkdir -p ../android-build/${{ matrix.abi }}
@@ -218,13 +215,9 @@ jobs:
           echo "=== Testing pkg-config ==="
           echo "PKG_CONFIG_LIBDIR=$PKG_CONFIG_LIBDIR"
           pkg-config --exists dav1d && echo "dav1d found" || echo "dav1d NOT found"
-          pkg-config --modversion dav1d || echo "Cannot get dav1d version"
-          pkg-config --cflags dav1d || echo "Cannot get dav1d cflags"
-          pkg-config --libs dav1d || echo "Cannot get dav1d libs"
-          
-          # Test if library file exists
-          echo "=== Checking library existence ==="
-          ls -la "$PREFIX_ABS/lib/libdav1d.so"* || true
+          pkg-config --modversion dav1d
+          pkg-config --cflags dav1d
+          pkg-config --libs dav1d
           
           ac_cv_func_glob=no ./configure \
             --prefix="$PWD/../android-build/${{ matrix.abi }}" \
@@ -251,21 +244,14 @@ jobs:
             --enable-decoder=libdav1d \
             $( [ "${{ env.ARCH }}" = "arm64" -o "${{ env.ARCH }}" = "arm" ] && echo "--enable-neon" ) \
             --extra-cflags="-I$PREFIX_ABS/include -fPIC" \
-            --extra-ldflags="-L$PREFIX_ABS/lib -Wl,-z,max-page-size=16384 -Wl,-rpath-link,$PREFIX_ABS/lib" \
-            --extra-libs="-ldav1d -lpthread -ldl -lm"
-          
-      - name: Show dav1d detection details from config.log
-        if: always()
+            --extra-ldflags="-L$PREFIX_ABS/lib -Wl,-z,max-page-size=16384 -Wl,-rpath-link,$PREFIX_ABS/lib"
+            
+      - name: Show config.log on failure
+        if: failure()
         working-directory: ffmpeg-src
         run: |
-          echo "=== Searching for libdav1d check in config.log ==="
-          grep -A 50 "check_pkg_config libdav1d" ffbuild/config.log || echo "Pattern not found"
-          echo ""
-          echo "=== Searching for any dav1d mention ==="
-          grep -i "dav1d" ffbuild/config.log | head -50 || echo "No dav1d mentions"
-          echo ""
-          echo "=== Showing test compilation errors ==="
-          grep -A 10 "test_ld cc" ffbuild/config.log | tail -100 || true
+          echo "=== Last 200 lines of config.log ==="
+          tail -200 ffbuild/config.log || true
           
       - name: Build FFmpeg for ${{ matrix.abi }}
         working-directory: ffmpeg-src
@@ -284,8 +270,8 @@ jobs:
         run: |
           set -e
           echo "=== Checking if libdav1d decoder is enabled ==="
-          grep "CONFIG_LIBDAV1D_DECODER" config.h || echo "WARNING: libdav1d decoder not found"
-          grep "CONFIG_LIBDAV1D" config.h || echo "WARNING: libdav1d not found"
+          grep "CONFIG_LIBDAV1D_DECODER 1" config.h && echo "✓ libdav1d decoder is enabled" || echo "✗ libdav1d decoder NOT enabled"
+          grep "CONFIG_LIBDAV1D 1" config.h && echo "✓ libdav1d is enabled" || echo "✗ libdav1d NOT enabled"
           
       - name: Verify no iconv references remain
         run: |
@@ -299,7 +285,7 @@ jobs:
               exit 1
             fi
           done
-          echo "OK: No iconv references found."
+          echo "✓ OK: No iconv references found."
           
       - name: List built libraries
         run: |
@@ -312,7 +298,7 @@ jobs:
             readelf -d "$so" | grep NEEDED || true
           done
           
-      - name: Copy config.h to output dir
+      - name: Copy config.h and headers to output dir
         working-directory: ffmpeg-src
         run: |
           cp -v config.h ../android-build/${{ matrix.abi }}/config.h
