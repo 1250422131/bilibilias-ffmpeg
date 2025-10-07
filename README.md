@@ -1,7 +1,7 @@
 
 ## 关于仓库
 
-此仓库仅为BILIBILIAS提供所使用的FFmpeg二进制产物，没有其他任何用途。
+[BILIBILIAS](https://github.com/1250422131/bilibilias)的开发者可使用此仓库的构建产物来构建APP，下载后需要手动解压至下面指出的文件夹中。
 
 
 ## 发布产物结构
