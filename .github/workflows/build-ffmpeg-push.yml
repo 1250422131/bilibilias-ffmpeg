@@ -388,9 +388,11 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ github.event.inputs.internal-version }}
-          name: FFmpeg Android ${{ github.event.inputs.internal-version }}
+          name: AS FFmpeg Android ${{ github.event.inputs.internal-version }}
           body: |
-            ## FFmpeg Android Build
+            ## AS FFmpeg Android Build
+
+            此构建未修改任何FFmpeg源代码，仅针对Android进行了交叉编译，供[bilibilias](https://github.com/1250422131/bilibilias)使用。
             
             **Internal Version:** ${{ github.event.inputs.internal-version }}
             **FFmpeg Version:** ${{ github.event.inputs.ffmpeg-tag }}
