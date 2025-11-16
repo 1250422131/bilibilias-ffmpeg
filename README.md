@@ -15,8 +15,9 @@ ffmpeg/
 └── as-ffmpeg-version
 ```
 
-开发者可前往Releases下载构建产物，下载后需手动解压至`BILIBILIAS\core\ffmpeg\src\main\cpp`中，注意cpp下需要有ffmpeg文件夹包裹。
+开发者可前往Releases下载构建产物，下载后需手动解压至`BILIBILIAS\core\ffmpeg\src\main\cpp`中，注意cpp下需要有ffmpeg文件夹包裹，如下图所示：
 
+<img width="453" height="578" alt="image" src="https://github.com/user-attachments/assets/c94ad36e-060a-4d84-9e15-d8ceb70d6a78" />
 
 ## FFmpeg
 
