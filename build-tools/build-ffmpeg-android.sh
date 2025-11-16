@@ -3,10 +3,9 @@ set -euo pipefail
 
 usage() {
   cat <<EOF
-Usage: build-ffmpeg-android.sh --abi <abi> [options]
+Usage: build-ffmpeg-android.sh [--abi <abi>]... [options]
 
-Required:
-  --abi <abi>              Target ABI (arm64-v8a | armeabi-v7a | x86_64)
+If no --abi flag is provided, all supported ABIs (arm64-v8a, armeabi-v7a, x86_64) are built.
 
 Optional overrides (env vars also respected):
   --ffmpeg-tag <tag>       FFmpeg git tag/commit (default: ${FFMPEG_TAG:-n8.0})
@@ -18,16 +17,21 @@ Optional overrides (env vars also respected):
 Environment toggles:
   SKIP_DEP_INSTALL=1       Skip apt-based dependency installation attempt
 
-Example:
-  ./build-tools/build-ffmpeg-android.sh --abi arm64-v8a --ffmpeg-tag n8.0 \
-    --ndk-version r27 --min-api-level 26
+Examples:
+  # Build all ABIs with defaults
+  ./build-tools/build-ffmpeg-android.sh
+
+  # Build a subset of ABIs with overrides
+  ./build-tools/build-ffmpeg-android.sh --abi arm64-v8a --abi x86_64 \
+    --ffmpeg-tag n8.0 --ndk-version r27 --min-api-level 26
 EOF
 }
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-ABI=""
+DEFAULT_ABIS=(arm64-v8a armeabi-v7a x86_64)
+REQUESTED_ABIS=()
 FFMPEG_TAG="${FFMPEG_TAG:-n8.0}"
 NDK_VERSION="${NDK_VERSION:-r27}"
 MIN_API_LEVEL="${MIN_API_LEVEL:-26}"
@@ -55,7 +59,7 @@ trap 'on_error $LINENO' ERR
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --abi)
-      ABI="$2"
+      REQUESTED_ABIS+=("$2")
       shift 2
       ;;
     --ffmpeg-tag)
@@ -90,12 +94,6 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$ABI" ]]; then
-  echo "Error: --abi is required" >&2
-  usage
-  exit 1
-fi
-
 if [[ -z "$JOBS" ]]; then
   if command -v nproc >/dev/null 2>&1; then
     JOBS="$(nproc)"
@@ -108,16 +106,23 @@ NDK_ZIP="android-ndk-${NDK_VERSION}-linux.zip"
 NDK_DIR="$ROOT_DIR/android-ndk-${NDK_VERSION}"
 FFMPEG_DIR="$ROOT_DIR/ffmpeg-src"
 DEPS_DIR="$ROOT_DIR/deps"
-ANDROID_LIBS_DIR="$ROOT_DIR/android-libs/$ABI"
-ANDROID_BUILD_DIR="$ROOT_DIR/android-build/$ABI"
 BIN_DIR="$ROOT_DIR/bin"
 MESON_CROSS_DIR="$ROOT_DIR/meson-cross"
 PKG_CONFIG_FAKE="$BIN_DIR/pkg-config-fake"
-MESON_CROSS_FILE="$MESON_CROSS_DIR/android-${ABI}.ini"
-DAV1D_PREFIX="$ANDROID_LIBS_DIR"
 DAV1D_VERSION="1.2.1"
+FFMPEG_STAGE_DIR="$ROOT_DIR/ffmpeg"
+REFERENCE_INCLUDE_DIR=""
+declare -a BUILD_ABIS=()
 
-mkdir -p "$DEPS_DIR" "$ANDROID_LIBS_DIR" "$ANDROID_BUILD_DIR" "$BIN_DIR" "$MESON_CROSS_DIR"
+if [[ ${#REQUESTED_ABIS[@]} -eq 0 ]]; then
+  BUILD_ABIS=("${DEFAULT_ABIS[@]}")
+else
+  BUILD_ABIS=("${REQUESTED_ABIS[@]}")
+fi
+
+mkdir -p "$DEPS_DIR" "$BIN_DIR" "$MESON_CROSS_DIR"
+rm -rf "$FFMPEG_STAGE_DIR"
+mkdir -p "$FFMPEG_STAGE_DIR"
 
 install_dependencies() {
   if [[ "${SKIP_DEP_INSTALL:-0}" == "1" ]]; then
@@ -169,9 +174,24 @@ EOF
   chmod +x "$PKG_CONFIG_FAKE"
 }
 
+set_paths_for_abi() {
+  local abi="$1"
+  ANDROID_LIBS_DIR="$ROOT_DIR/android-libs/$abi"
+  ANDROID_BUILD_DIR="$ROOT_DIR/android-build/$abi"
+  MESON_CROSS_FILE="$MESON_CROSS_DIR/android-${abi}.ini"
+  DAV1D_PREFIX="$ANDROID_LIBS_DIR"
+}
+
+prepare_dirs_for_abi() {
+  mkdir -p "$ANDROID_LIBS_DIR"
+  rm -rf "$ANDROID_BUILD_DIR"
+  mkdir -p "$ANDROID_BUILD_DIR"
+}
+
 setup_toolchain_env() {
+  local abi="$1"
   local toolchain="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64"
-  case "$ABI" in
+  case "$abi" in
     arm64-v8a)
       ARCH=arm64
       CPU=armv8-a
@@ -203,7 +223,7 @@ setup_toolchain_env() {
       MESON_CPU=x86-64
       ;;
     *)
-      echo "Unsupported ABI: $ABI" >&2
+      echo "Unsupported ABI: $abi" >&2
       exit 1
       ;;
   esac
@@ -370,22 +390,48 @@ copy_headers() {
   cp -v "$FFMPEG_DIR/config.h" "$ANDROID_BUILD_DIR/config.h"
 }
 
-write_version_file() {
+write_abi_version_file() {
   echo "$INTERNAL_VERSION" > "$ANDROID_BUILD_DIR/as-ffmpeg-version"
+}
+
+stage_final_outputs() {
+  local abi="$1"
+  local dest_lib_dir="$FFMPEG_STAGE_DIR/$abi/lib"
+  mkdir -p "$dest_lib_dir"
+  cp -v "$ANDROID_BUILD_DIR/lib"/*.so "$dest_lib_dir/"
+
+  if [[ -z "$REFERENCE_INCLUDE_DIR" ]]; then
+    REFERENCE_INCLUDE_DIR="$ANDROID_BUILD_DIR/include"
+    mkdir -p "$FFMPEG_STAGE_DIR/include"
+    cp -rv "$REFERENCE_INCLUDE_DIR/." "$FFMPEG_STAGE_DIR/include/"
+  fi
+}
+
+write_package_version_file() {
+  echo "$INTERNAL_VERSION" > "$FFMPEG_STAGE_DIR/as-ffmpeg-version"
 }
 
 ensure_ndk
 ensure_ffmpeg
 ensure_pkg_config_fake
-setup_toolchain_env
-write_meson_cross_file
-build_dav1d
-clean_ffmpeg
-configure_ffmpeg
-build_ffmpeg
-copy_dav1d_so
-verify_build
-copy_headers
-write_version_file
 
-echo "Build for ABI $ABI completed. Output: $ANDROID_BUILD_DIR"
+for ABI in "${BUILD_ABIS[@]}"; do
+  echo "=== Building ABI: $ABI ==="
+  set_paths_for_abi "$ABI"
+  prepare_dirs_for_abi
+  setup_toolchain_env "$ABI"
+  write_meson_cross_file
+  build_dav1d
+  clean_ffmpeg
+  configure_ffmpeg
+  build_ffmpeg
+  copy_dav1d_so
+  verify_build
+  copy_headers
+  write_abi_version_file
+  stage_final_outputs "$ABI"
+done
+
+write_package_version_file
+
+echo "All builds completed. Consolidated output: $FFMPEG_STAGE_DIR"

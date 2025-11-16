@@ -23,10 +23,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    strategy:
-      fail-fast: false
-      matrix:
-        abi: [arm64-v8a, armeabi-v7a, x86_64]
     env:
       MIN_API_LEVEL: ${{ github.event.inputs.min-api-level || '26' }}
     steps:
@@ -45,23 +41,23 @@ jobs:
           readelf --version
           pkg-config --version
 
-      - name: Run build script (${{ matrix.abi }})
+      - name: Run build script (all ABIs)
         env:
           SKIP_DEP_INSTALL: "1"
         run: |
           bash build-tools/build-ffmpeg-android.sh \
-            --abi ${{ matrix.abi }} \
             --ffmpeg-tag "${{ github.event.inputs.ffmpeg-tag || 'n8.0' }}" \
             --ndk-version "${{ github.event.inputs.ndk-version || 'r27' }}" \
             --min-api-level "${{ github.event.inputs.min-api-level || '26' }}" \
             --internal-version "${{ github.event.inputs.internal-version || '1.0.0' }}"
 
-      - name: Verify version marker
+      - name: Verify consolidated version marker
         run: |
-          cat android-build/${{ matrix.abi }}/as-ffmpeg-version
+          cat ffmpeg/as-ffmpeg-version
+          tree ffmpeg || find ffmpeg -type f
 
-      - name: Upload ${{ matrix.abi }} artifact
+      - name: Upload consolidated artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ffmpeg-script-test-${{ matrix.abi }}-api${{ env.MIN_API_LEVEL }}
-          path: android-build/${{ matrix.abi }}
+          name: ffmpeg-script-test-api${{ env.MIN_API_LEVEL }}
+          path: ffmpeg
