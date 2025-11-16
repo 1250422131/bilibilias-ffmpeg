@@ -1,0 +1,67 @@
+name: Test FFmpeg Build Script
+
+on:
+  workflow_dispatch:
+    inputs:
+      ffmpeg-tag:
+        description: "FFmpeg git tag (e.g. n8.0)"
+        required: true
+        default: "n8.0"
+      ndk-version:
+        description: "Android NDK version (e.g. r27)"
+        required: true
+        default: "r27"
+      min-api-level:
+        description: "Min Android API level to build against (e.g. 26)"
+        required: true
+        default: "26"
+      internal-version:
+        description: "Internal build version (e.g. 1.0.0)"
+        required: true
+        default: "1.0.0"
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [arm64-v8a, armeabi-v7a, x86_64]
+    env:
+      MIN_API_LEVEL: ${{ github.event.inputs.min-api-level || '26' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y \
+            git wget unzip build-essential pkg-config yasm nasm binutils \
+            libc6:i386 libstdc++6:i386 lib32z1 gcc-multilib g++-multilib \
+            ninja-build meson python3-pip
+          nasm -v
+          readelf --version
+          pkg-config --version
+
+      - name: Run build script (${{ matrix.abi }})
+        env:
+          SKIP_DEP_INSTALL: "1"
+        run: |
+          bash build-tools/build-ffmpeg-android.sh \
+            --abi ${{ matrix.abi }} \
+            --ffmpeg-tag "${{ github.event.inputs.ffmpeg-tag || 'n8.0' }}" \
+            --ndk-version "${{ github.event.inputs.ndk-version || 'r27' }}" \
+            --min-api-level "${{ github.event.inputs.min-api-level || '26' }}" \
+            --internal-version "${{ github.event.inputs.internal-version || '1.0.0' }}"
+
+      - name: Verify version marker
+        run: |
+          cat android-build/${{ matrix.abi }}/as-ffmpeg-version
+
+      - name: Upload ${{ matrix.abi }} artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-script-test-${{ matrix.abi }}-api${{ env.MIN_API_LEVEL }}
+          path: android-build/${{ matrix.abi }}
