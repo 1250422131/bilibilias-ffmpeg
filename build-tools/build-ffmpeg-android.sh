@@ -11,7 +11,7 @@ Optional overrides (env vars also respected):
   --ffmpeg-tag <tag>       FFmpeg git tag/commit (default: ${FFMPEG_TAG:-n8.0})
   --ndk-version <ver>      Android NDK version (default: ${NDK_VERSION:-r27})
   --min-api-level <lvl>    Android min API level (default: ${MIN_API_LEVEL:-26})
-  --internal-version <ver> Internal release marker written to as-ffmpeg-version (default: ${INTERNAL_VERSION:-1.0.0})
+  --internal-version <ver> Internal release marker written to as-ffmpeg-version (default: ${INTERNAL_VERSION:-0.1.1})
   --jobs <n>               Parallel make jobs (default: auto)
 
 Environment toggles:
