@@ -1,4 +1,5 @@
 # Build AV1 FFmpeg for Android (multi-ABI), produce libfftools.so with static-fallback,
+# include any source that defines missing symbols (e.g. stdin_interaction) into libfftools,
 # install headers/pkg-config, and remove .a files before uploading artifacts.
 name: Build AV1 FFmpeg for Android (multi-ABI, shared+static, 16KB page, libfftools)
 
@@ -174,11 +175,9 @@ jobs:
             --default-library=shared
           ninja -C build
           ninja -C build install
-
           PC_FILE="$PREFIX_ABS/lib/pkgconfig/dav1d.pc"
           echo "=== Original dav1d.pc ==="
           cat "$PC_FILE" || true
-
           cat > "$PC_FILE" <<EOF
           prefix=$PREFIX_ABS
           exec_prefix=\${prefix}
@@ -191,7 +190,6 @@ jobs:
           Libs.private: -ldl -lm
           Cflags: -I\${includedir}
           EOF
-
           echo "=== Fixed dav1d.pc ==="
           cat "$PC_FILE"
           echo "=== Verifying libdav1d.so ==="
@@ -212,7 +210,6 @@ jobs:
           export PKG_CONFIG=/usr/bin/pkg-config
           export PKG_CONFIG_LIBDIR="$PREFIX_ABS/lib/pkgconfig"
           export PKG_CONFIG_PATH="$PREFIX_ABS/lib/pkgconfig"
-
           # Enable both shared and static so we can fallback to static linking of internal objects when needed
           ac_cv_func_glob=no ./configure \
             --prefix="$PWD/../android-build/${{ matrix.abi }}" \
@@ -256,7 +253,7 @@ jobs:
           make -j"$(nproc)"
           make install V=1
 
-      - name: Build libfftools (shared) for ${{ matrix.abi }} with static fallback
+      - name: Build libfftools (shared) for ${{ matrix.abi }} with static fallback and include-definition search
         working-directory: ffmpeg-src
         run: |
           set -e
@@ -265,40 +262,57 @@ jobs:
           FFMPEG_PREFIX="$PWD/../android-build/${{ matrix.abi }}"
           ABI_LIB_DIR="$FFMPEG_PREFIX/lib"
           mkdir -p "$ABI_LIB_DIR"
-
           FFMPEG_TOOL_SRC="fftools/ffmpeg.c"
           if [ ! -f "$FFMPEG_TOOL_SRC" ]; then
             echo "ERROR: $FFMPEG_TOOL_SRC not found. Listing fftools/"
             ls -la fftools || true
             exit 1
           fi
-
           # Patch fftools/ffmpeg.c in-place (save original)
           cp -v "$FFMPEG_TOOL_SRC" "${FFMPEG_TOOL_SRC}.orig" || true
           sed -i 's/\bint[[:space:]]\+main[[:space:]]*(/int ffmpeg_main(/g' "$FFMPEG_TOOL_SRC" || true
           sed -i -E 's/\bexit_program\s*\(\s*([^)]+)\s*\)/return (\1)/g' "$FFMPEG_TOOL_SRC" || true
           echo "=== Diff (if any) ==="
           diff -u "${FFMPEG_TOOL_SRC}.orig" "$FFMPEG_TOOL_SRC" || true
-
           INCLUDE_DIR="$FFMPEG_PREFIX/include"
           DAV1D_INCLUDE="$PREFIX_ABS/include"
-
           echo "CC = $CC"
           echo "Include dirs: $INCLUDE_DIR $DAV1D_INCLUDE"
           echo "Lib dirs: $ABI_LIB_DIR $PREFIX_ABS/lib"
-
-          # Attempt shared linking first
+          # Search for definitions of common internal symbols (e.g. stdin_interaction) and include the files if found
+          SYMBOLS_TO_CHECK="stdin_interaction stdin_action stdin_read stdin_write"
+          EXTRA_SRCS=""
+          for sym in $SYMBOLS_TO_CHECK; do
+            # prefer fftools/ first, then whole repo
+            file=$(grep -R --line-number -n --exclude-dir=build --exclude-dir=.git --include='*.c' --include='*.cpp' "\b${sym}\b" fftools 2>/dev/null | sed -n '1p' | cut -d: -f1)
+            if [ -z "$file" ]; then
+              file=$(grep -R --line-number -n --exclude-dir=build --exclude-dir=.git --include='*.c' --include='*.cpp' "\b${sym}\b" . 2>/dev/null | sed -n '1p' | cut -d: -f1)
+            fi
+            if [ -n "$file" ]; then
+              # avoid duplicates
+              if ! echo "$EXTRA_SRCS" | grep -qF "$file"; then
+                EXTRA_SRCS="$EXTRA_SRCS $file"
+                echo "Including extra source for symbol $sym: $file"
+              fi
+            fi
+          done
+          # prepare source list
+          SRC_LIST="$FFMPEG_TOOL_SRC"
+          if [ -n "$EXTRA_SRCS" ]; then
+            SRC_LIST="$SRC_LIST $EXTRA_SRCS"
+          fi
+          echo "Source list for libfftools: $SRC_LIST"
+          # Attempt shared linking first (ensure soname is set)
           set +e
-          "$CC" -shared -fPIC -O2 -Wl,-z,max-page-size=16384 \
+          "$CC" -shared -fPIC -O2 -Wl,-soname=libfftools.so -Wl,-z,max-page-size=16384 \
             -I"$PWD" -I"$INCLUDE_DIR" -I"$DAV1D_INCLUDE" \
-            "$FFMPEG_TOOL_SRC" \
+            $SRC_LIST \
             -L"$ABI_LIB_DIR" -L"$PREFIX_ABS/lib" \
             -lavformat -lavcodec -lavutil -lswscale -lswresample -lavfilter -ldav1d \
             -ldl -lm -lz \
             -o "$ABI_LIB_DIR/libfftools.so" 2> build-libfftools-shared.log
           rc=$?
           set -e
-
           if [ $rc -eq 0 ]; then
             echo "=== libfftools.so built by linking against shared libs ==="
             ls -lh "$ABI_LIB_DIR/libfftools.so" || true
@@ -306,7 +320,6 @@ jobs:
             echo "=== Shared link failed; printing first 200 lines of build-libfftools-shared.log ==="
             sed -n '1,200p' build-libfftools-shared.log || true
             echo "=== Attempting static fallback: include FFmpeg .a archives using --whole-archive ==="
-
             # Collect static archives (.a) produced by install
             STATIC_ARCS=()
             for lib in libavcodec.a libavformat.a libavutil.a libswresample.a libswscale.a libavfilter.a libavdevice.a; do
@@ -314,30 +327,26 @@ jobs:
                 STATIC_ARCS+=("$ABI_LIB_DIR/$lib")
               fi
             done
-
             if [ ${#STATIC_ARCS[@]} -eq 0 ]; then
               echo "No static archives found in $ABI_LIB_DIR; cannot perform fallback."
               ls -la "$ABI_LIB_DIR" || true
               exit 1
             fi
-
             # Build with whole-archive of static libs to ensure internal symbols are available
             ARGS_WHOLE=""
             for a in "${STATIC_ARCS[@]}"; do
               ARGS_WHOLE="$ARGS_WHOLE $a"
             done
-
-            "$CC" -shared -fPIC -O2 -Wl,-z,max-page-size=16384 \
+            # Include the same EXTRA_SRCS (if any) to increase chance missing symbols are resolved
+            "$CC" -shared -fPIC -O2 -Wl,-soname=libfftools.so -Wl,-z,max-page-size=16384 \
               -I"$PWD" -I"$INCLUDE_DIR" -I"$DAV1D_INCLUDE" \
-              "$FFMPEG_TOOL_SRC" \
+              $SRC_LIST \
               -Wl,--whole-archive $ARGS_WHOLE -Wl,--no-whole-archive \
               -L"$PREFIX_ABS/lib" -ldav1d \
               -ldl -lm -lz \
               -o "$ABI_LIB_DIR/libfftools.so" 2> build-libfftools-static.log || true
-
             echo "=== Static fallback logs (first 200 lines) ==="
             sed -n '1,200p' build-libfftools-static.log || true
-
             if [ -f "$ABI_LIB_DIR/libfftools.so" ]; then
               echo "=== libfftools.so created using static fallback ==="
               ls -lh "$ABI_LIB_DIR/libfftools.so" || true
@@ -357,32 +366,25 @@ jobs:
           ABI_LIB_DIR="$FFMPEG_PREFIX/lib"
           mkdir -p "$ABI_INCLUDE_DIR/libfftools"
           mkdir -p "$ABI_LIB_DIR/pkgconfig"
-
           cat > "$ABI_INCLUDE_DIR/libfftools/ffmpeg.h" <<'EOF'
           #ifndef LIBFFTOOLS_FFMPEG_H
           #define LIBFFTOOLS_FFMPEG_H
-
           #ifdef __cplusplus
           extern "C" {
           #endif
-
           /* Entry point renamed from main() to ffmpeg_main(). */
           int ffmpeg_main(int argc, char **argv);
-
           #ifdef __cplusplus
           }
           #endif
-
           #endif /* LIBFFTOOLS_FFMPEG_H */
           EOF
-
           PC_FILE="$ABI_LIB_DIR/pkgconfig/libfftools.pc"
           cat > "$PC_FILE" <<EOF
           prefix=$FFMPEG_PREFIX
           exec_prefix=\${prefix}
           libdir=\${prefix}/lib
           includedir=\${prefix}/include
-
           Name: libfftools
           Description: FFmpeg tools as a library (ffmpeg_main)
           Version: 0.0.0
@@ -390,7 +392,6 @@ jobs:
           Libs.private: -lavformat -lavcodec -lavutil -lswscale -lswresample -lavfilter -ldav1d -ldl -lm -lz
           Cflags: -I\${includedir}/libfftools
           EOF
-
           echo "=== Installed header and pkg-config ==="
           ls -la "$ABI_INCLUDE_DIR/libfftools" || true
           ls -la "$ABI_LIB_DIR/pkgconfig" || true
