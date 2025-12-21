@@ -1,3 +1,4 @@
+# Build FFmpeg for Android (multi-ABI), produce libfftools.so, install headers, remove .a before upload
 name: Build FFmpeg for Android (multi-ABI, shared+static, 16KB page, libfftools)
 
 on:
@@ -15,6 +16,10 @@ on:
         description: "Min Android API level to build against (e.g. 26 for Android 8)"
         required: true
         default: "26"
+      internal-version:
+        description: "Internal version tag (e.g. 1.0.0)"
+        required: false
+        default: "1.0.0"
 
 jobs:
   build:
@@ -51,11 +56,11 @@ jobs:
 
       - name: Clone FFmpeg
         run: |
-          git clone https://github.com/FFmpeg/FFmpeg ffmpeg-src
+          git clone --depth 1 https://github.com/FFmpeg/FFmpeg ffmpeg-src
           cd ffmpeg-src
           git fetch --tags
-          git checkout ${{ github.event.inputs.ffmpeg-tag || 'n8.0' }}
-          git rev-parse --short HEAD
+          git checkout ${{ github.event.inputs.ffmpeg-tag || 'n8.0' }} || true
+          git rev-parse --short HEAD || true
 
       - name: Set up toolchain for ${{ matrix.abi }}
         run: |
@@ -349,10 +354,66 @@ jobs:
             fi
           fi
 
+      - name: Install libfftools header and pkg-config
+        working-directory: ffmpeg-src
+        run: |
+          set -e
+          FFMPEG_PREFIX="$PWD/../android-build/${{ matrix.abi }}"
+          ABI_INCLUDE_DIR="$FFMPEG_PREFIX/include"
+          ABI_LIB_DIR="$FFMPEG_PREFIX/lib"
+          mkdir -p "$ABI_INCLUDE_DIR/libfftools"
+          mkdir -p "$ABI_LIB_DIR/pkgconfig"
+
+          cat > "$ABI_INCLUDE_DIR/libfftools/ffmpeg.h" <<'EOF'
+          #ifndef LIBFFTOOLS_FFMPEG_H
+          #define LIBFFTOOLS_FFMPEG_H
+
+          #ifdef __cplusplus
+          extern "C" {
+          #endif
+
+          /* Entry point renamed from main() to ffmpeg_main() by the build script.
+             Call this function with argc/argv to run ffmpeg tool logic inside your process. */
+          int ffmpeg_main(int argc, char **argv);
+
+          #ifdef __cplusplus
+          }
+          #endif
+
+          #endif /* LIBFFTOOLS_FFMPEG_H */
+          EOF
+
+          PC_FILE="$ABI_LIB_DIR/pkgconfig/libfftools.pc"
+          cat > "$PC_FILE" <<EOF
+          prefix=$FFMPEG_PREFIX
+          exec_prefix=\${prefix}
+          libdir=\${prefix}/lib
+          includedir=\${prefix}/include
+
+          Name: libfftools
+          Description: FFmpeg tools as a library (ffmpeg_main)
+          Version: 0.0.0
+          Libs: -L\${libdir} -lfftools
+          Libs.private: -lavformat -lavcodec -lavutil -lswscale -lswresample -lavfilter -ldav1d -ldl -lm -lz
+          Cflags: -I\${includedir}/libfftools
+          EOF
+
+          echo "=== Installed header and pkg-config ==="
+          ls -la "$ABI_INCLUDE_DIR/libfftools" || true
+          ls -la "$ABI_LIB_DIR/pkgconfig" || true
+
       - name: Copy dav1d library to output
         run: |
           set -e
           cp -v android-libs/${{ matrix.abi }}/lib/libdav1d.so* android-build/${{ matrix.abi }}/lib/ || true
+
+      - name: Remove static archives (.a) from output before upload
+        run: |
+          set -e
+          echo "=== Removing .a files from android-build/${{ matrix.abi }}/lib ==="
+          find android-build/${{ matrix.abi }}/lib -name '*.a' -print -delete || true
+          echo "=== Remaining files ==="
+          ls -la android-build/${{ matrix.abi }}/lib || true
 
       - name: Verify AV1 decoder is enabled
         working-directory: ffmpeg-src
@@ -397,3 +458,99 @@ jobs:
         with:
           name: ffmpeg-android-${{ matrix.abi }}-api${{ env.MIN_API_LEVEL }}
           path: android-build/${{ matrix.abi }}
+
+  package-and-release:
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create final package structure
+        run: |
+          set -e
+
+          # Create the ffmpeg directory structure
+          mkdir -p ffmpeg/arm64-v8a/lib
+          mkdir -p ffmpeg/armeabi-v7a/lib
+          mkdir -p ffmpeg/x86_64/lib
+          mkdir -p ffmpeg/include
+
+          # Copy libraries for each ABI
+          echo "=== Copying arm64-v8a libraries ==="
+          cp -v artifacts/ffmpeg-android-arm64-v8a-api${{ github.event.inputs.min-api-level }}/lib/*.so ffmpeg/arm64-v8a/lib/ || true
+
+          echo "=== Copying armeabi-v7a libraries ==="
+          cp -v artifacts/ffmpeg-android-armeabi-v7a-api${{ github.event.inputs.min-api-level }}/lib/*.so ffmpeg/armeabi-v7a/lib/ || true
+
+          echo "=== Copying x86_64 libraries ==="
+          cp -v artifacts/ffmpeg-android-x86_64-api${{ github.event.inputs.min-api-level }}/lib/*.so ffmpeg/x86_64/lib/ || true
+
+          # Copy include files from arm64-v8a (they should be the same for all ABIs)
+          echo "=== Copying include headers ==="
+          cp -rv artifacts/ffmpeg-android-arm64-v8a-api${{ github.event.inputs.min-api-level }}/include/* ffmpeg/include/ || true
+
+          # Create version file
+          echo "${{ github.event.inputs.internal-version }}" > ffmpeg/as-ffmpeg-version
+
+          # Show the final structure
+          echo "=== Final package structure ==="
+          tree ffmpeg || find ffmpeg -type f
+
+      - name: Create release archive
+        run: |
+          set -e
+          ARCHIVE_NAME="ffmpeg-android-${{ github.event.inputs.internal-version }}.tar.gz"
+          tar -czf "$ARCHIVE_NAME" ffmpeg
+          echo "ARCHIVE_NAME=$ARCHIVE_NAME" >> $GITHUB_ENV
+          ls -lh "$ARCHIVE_NAME"
+          tar -tzf "$ARCHIVE_NAME" | head -20
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.event.inputs.internal-version }}
+          name: AS FFmpeg Android v${{ github.event.inputs.internal-version }}
+          body: |
+            ## AS FFmpeg Android Build
+
+            此构建在 FFmpeg 源码基础上为 Android 交叉编译，并生成 libfftools.so（ffmpeg_main 函数），仅供仓库开发者使用。
+
+            **Internal Version:** ${{ github.event.inputs.internal-version }}
+            **FFmpeg Version:** ${{ github.event.inputs.ffmpeg-tag }}
+            **NDK Version:** ${{ github.event.inputs.ndk-version }}
+            **Min API Level:** ${{ github.event.inputs.min-api-level }}
+
+            ### Included ABIs
+            - arm64-v8a
+            - armeabi-v7a
+            - x86_64
+
+            ### Features
+            - Built with dav1d (AV1 decoder)
+            - 16KB page size support
+            - Shared libraries (.so)
+            - libfftools.so (ffmpeg_main entry)
+            - No iconv dependencies
+
+            ### Package Structure
+            ```
+            ffmpeg/
+            ├── arm64-v8a/lib/
+            ├── armeabi-v7a/lib/
+            ├── x86_64/lib/
+            ├── include/
+            └── as-ffmpeg-version
+            ```
+          files: ${{ env.ARCHIVE_NAME }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
