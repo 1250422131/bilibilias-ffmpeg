@@ -144,16 +144,13 @@ jobs:
           ar = '${{ env.AR }}'
           strip = '${{ env.STRIP }}'
           pkgconfig = '${{ env.PKG_CONFIG_FAKE }}'
-
           [host_machine]
           system = 'android'
           cpu_family = '${{ env.MESON_CPU_FAMILY }}'
           cpu = '${{ env.MESON_CPU }}'
           endian = 'little'
-
           [properties]
           sys_root = '${{ env.SYSROOT }}'
-
           [built-in options]
           c_args = ['-fPIC']
           cpp_args = ['-fPIC']
@@ -189,7 +186,6 @@ jobs:
           exec_prefix=\${prefix}
           libdir=\${prefix}/lib
           includedir=\${prefix}/include
-
           Name: dav1d
           Description: AV1 decoding library
           Version: 1.2.1
@@ -214,11 +210,8 @@ jobs:
           export PKG_CONFIG_LIBDIR="$PREFIX_ABS/lib/pkgconfig"
           export PKG_CONFIG_PATH="$PREFIX_ABS/lib/pkgconfig"
 
-          # IMPORTANT:
-          # We keep --disable-programs to avoid producing installed ffmpeg binary,
-          # but we STILL rely on object files built by make (fftools/*.o).
-          # On some FFmpeg versions, disabling programs may skip building fftools objects.
-          # If you see "no fftools/*.o", switch to --enable-ffmpeg --disable-ffprobe --disable-ffplay.
+          # Enable building ffmpeg tool objects (fftools/*.o) so we can package them into libfftools.so.
+          # Disable other tools to reduce size / avoid symbol clashes.
           ac_cv_func_glob=no ./configure \
             --prefix="$PWD/../android-build/${{ matrix.abi }}" \
             --target-os=android \
@@ -237,6 +230,9 @@ jobs:
             --enable-shared \
             --enable-static \
             --disable-doc \
+            --enable-ffmpeg \
+            --disable-ffprobe \
+            --disable-ffplay \
             --enable-pic \
             --disable-debug \
             --disable-iconv \
@@ -269,8 +265,6 @@ jobs:
           ABI_LIB_DIR="$FFMPEG_PREFIX/lib"
           mkdir -p "$ABI_LIB_DIR"
 
-          # 1) Collect official-built fftools objects (do NOT guess sources).
-          #    We will replace ffmpeg.o with our own ffmpeg_entry.o where main is renamed.
           if ! ls fftools >/dev/null 2>&1; then
             echo "ERROR: fftools/ directory not found in this FFmpeg tree."
             exit 1
@@ -279,7 +273,6 @@ jobs:
           ALL_OBJS="$(find fftools -maxdepth 1 -name '*.o' -print | tr '\n' ' ')"
           if [ -z "$ALL_OBJS" ]; then
             echo "ERROR: no fftools/*.o found. This FFmpeg config likely skipped building tools."
-            echo "FIX: change configure to enable building ffmpeg objects: --enable-ffmpeg --disable-ffprobe --disable-ffplay"
             find fftools -maxdepth 1 -type f -print || true
             exit 1
           fi
@@ -287,38 +280,44 @@ jobs:
           echo "=== Found fftools objects ==="
           ls -la fftools/*.o || true
 
-          # 2) Build a replacement object for fftools/ffmpeg.c with main renamed to ffmpeg_main.
-          #    This avoids editing source and avoids duplicate symbols.
+          # Build replacement entry object for fftools/ffmpeg.c: rename main -> ffmpeg_main
           echo "=== Building ffmpeg_entry.o with -Dmain=ffmpeg_main ==="
-          # Get compile flags used by FFmpeg build from ffbuild/ffbuild.h and config.mak is non-trivial.
-          # We use a conservative set that usually works for ffmpeg.c when headers are generated.
           "$CC" -c -fPIC -O2 -Dmain=ffmpeg_main \
-            -I. -I./fftools -I./ffbuild -I./compat -I"$FFMPEG_PREFIX/include" -I"$PREFIX_ABS/include" \
+            -I. -I./fftools -I./ffbuild -I./compat \
             -DHAVE_CONFIG_H \
             -o fftools/ffmpeg_entry.o fftools/ffmpeg.c
 
-          # 3) Build object list:
-          #    - include everything in fftools/*.o EXCEPT the original fftools/ffmpeg.o (if present)
-          #    - add our fftools/ffmpeg_entry.o
+          # Build object list:
+          # - include ffmpeg tool objs only
+          # - exclude ffprobe/ffplay objects to avoid duplicate global symbols
+          # - replace original fftools/ffmpeg.o with fftools/ffmpeg_entry.o
           OBJS=""
           for o in fftools/*.o; do
             base="$(basename "$o")"
+
+            if [ "$base" = "ffprobe.o" ] || [ "$base" = "ffplay.o" ]; then
+              echo "Skipping $o (not part of ffmpeg tool)"
+              continue
+            fi
+
             if [ "$base" = "ffmpeg.o" ]; then
               echo "Skipping original $o (replaced by ffmpeg_entry.o)"
               continue
             fi
+
             if [ "$base" = "ffmpeg_entry.o" ]; then
               continue
             fi
+
             OBJS="$OBJS $o"
           done
           OBJS="$OBJS fftools/ffmpeg_entry.o"
 
-          echo "=== Final object list size ==="
-          echo "$OBJS" | wc -w
+          echo "=== Final object list ==="
+          echo "$OBJS" | tr ' ' '\n' | sed '/^$/d'
+          echo "count=$(echo "$OBJS" | wc -w)"
 
-          # 4) Link libfftools.so (shared-first).
-          #    This will depend on your libav*.so at runtime (that's what you want).
+          # Link libfftools.so (shared-first): depends on libav*.so at runtime
           set +e
           "$CC" -shared -fPIC -O2 \
             -Wl,-soname=libfftools.so \
@@ -343,8 +342,10 @@ jobs:
                 STATIC_ARCS="$STATIC_ARCS $ABI_LIB_DIR/$lib"
               fi
             done
+            echo "STATIC_ARCS=$STATIC_ARCS"
             if [ -z "$STATIC_ARCS" ]; then
               echo "ERROR: No static archives found for fallback in $ABI_LIB_DIR"
+              ls -la "$ABI_LIB_DIR" || true
               exit 1
             fi
 
@@ -397,7 +398,6 @@ jobs:
           exec_prefix=\${prefix}
           libdir=\${prefix}/lib
           includedir=\${prefix}/include
-
           Name: libfftools
           Description: FFmpeg CLI packaged as a library (ffmpeg_main)
           Version: ${{ github.event.inputs.ffmpeg-tag || 'n8.0' }}
