@@ -118,8 +118,6 @@ jobs:
 
       - name: Create pkg-config wrapper for dav1d build
         run: |
-          # Create a fake pkg-config for dav1d build that returns nothing
-          # (dav1d doesn't need to find external libs during cross-compile)
           mkdir -p bin
           cat > bin/pkg-config-fake <<'EOF'
           #!/bin/bash
@@ -175,12 +173,10 @@ jobs:
           ninja -C build
           ninja -C build install
 
-          # Fix pkg-config file - Android doesn't need -lpthread (it's in libc)
           PC_FILE="$PREFIX_ABS/lib/pkgconfig/dav1d.pc"
           echo "=== Original dav1d.pc ==="
           cat "$PC_FILE" || true
 
-          # Create a corrected .pc file without pthread
           cat > "$PC_FILE" <<EOF
           prefix=$PREFIX_ABS
           exec_prefix=\${prefix}
@@ -213,23 +209,10 @@ jobs:
 
           PREFIX_ABS="$PWD/../android-libs/${{ matrix.abi }}"
 
-          # Setup pkg-config to find dav1d - use real pkg-config here, not fake
           export PKG_CONFIG=/usr/bin/pkg-config
           export PKG_CONFIG_LIBDIR="$PREFIX_ABS/lib/pkgconfig"
           export PKG_CONFIG_PATH="$PREFIX_ABS/lib/pkgconfig"
 
-          # Test if pkg-config can find dav1d
-          echo "=== Testing pkg-config ==="
-          echo "PKG_CONFIG=$PKG_CONFIG"
-          echo "PKG_CONFIG_LIBDIR=$PKG_CONFIG_LIBDIR"
-          $PKG_CONFIG --exists dav1d && echo "dav1d found" || echo "dav1d NOT found"
-          $PKG_CONFIG --modversion dav1d || true
-          $PKG_CONFIG --cflags dav1d || true
-          $PKG_CONFIG --libs dav1d || true
-
-          # IMPORTANT:
-          # Enable both shared and static libraries so we can fallback to static linking
-          # of FFmpeg internals into libfftools if needed.
           ac_cv_func_glob=no ./configure \
             --prefix="$PWD/../android-build/${{ matrix.abi }}" \
             --target-os=android \
@@ -282,14 +265,20 @@ jobs:
           ABI_LIB_DIR="$FFMPEG_PREFIX/lib"
           mkdir -p "$ABI_LIB_DIR"
 
-          # Patch tools/ffmpeg.c: rename main and replace exit_program -> return
-          cp -v tools/ffmpeg.c tools/ffmpeg.c.orig || true
-          # rename 'int main(' to 'int ffmpeg_main(' (match typical patterns)
-          sed -i 's/\bint[[:space:]]\+main[[:space:]]*(/int ffmpeg_main(/g' tools/ffmpeg.c || true
-          # change exit_program(x) to return (x)
-          sed -i -E 's/\bexit_program\s*\(\s*([^)]+)\s*\)/return (\1)/g' tools/ffmpeg.c || true
+          FFMPEG_TOOL_SRC="fftools/ffmpeg.c"
+
+          if [ ! -f "$FFMPEG_TOOL_SRC" ]; then
+            echo "ERROR: source $FFMPEG_TOOL_SRC not found in ffmpeg-src. Available fftools/ directory listing:"
+            ls -la fftools || true
+            exit 1
+          fi
+
+          # Patch fftools/ffmpeg.c: rename main and replace exit_program -> return
+          cp -v "$FFMPEG_TOOL_SRC" "${FFMPEG_TOOL_SRC}.orig" || true
+          sed -i 's/\bint[[:space:]]\+main[[:space:]]*(/int ffmpeg_main(/g' "$FFMPEG_TOOL_SRC" || true
+          sed -i -E 's/\bexit_program\s*\(\s*([^)]+)\s*\)/return (\1)/g' "$FFMPEG_TOOL_SRC" || true
           echo "=== Diff of changes (if any) ==="
-          diff -u tools/ffmpeg.c.orig tools/ffmpeg.c || true
+          diff -u "${FFMPEG_TOOL_SRC}.orig" "$FFMPEG_TOOL_SRC" || true
 
           INCLUDE_DIR="$FFMPEG_PREFIX/include"
           DAV1D_INCLUDE="$PREFIX_ABS/include"
@@ -302,7 +291,7 @@ jobs:
           set +e
           "$CC" -shared -fPIC -O2 -Wl,-z,max-page-size=16384 \
             -I"$PWD" -I"$INCLUDE_DIR" -I"$DAV1D_INCLUDE" \
-            tools/ffmpeg.c \
+            "$FFMPEG_TOOL_SRC" \
             -L"$ABI_LIB_DIR" -L"$PREFIX_ABS/lib" \
             -lavformat -lavcodec -lavutil -lswscale -lswresample -lavfilter -ldav1d \
             -ldl -lm -lz \
@@ -334,17 +323,14 @@ jobs:
               exit 1
             fi
 
-            # Compose list string for linker
             ARGS_WHOLE=""
             for a in "${STATIC_ARCS[@]}"; do
               ARGS_WHOLE="$ARGS_WHOLE $a"
             done
 
-            # Build linking with whole-archive (include FFmpeg internals)
-            # We still link to dav1d shared library from android-libs prefix.
             "$CC" -shared -fPIC -O2 -Wl,-z,max-page-size=16384 \
               -I"$PWD" -I"$INCLUDE_DIR" -I"$DAV1D_INCLUDE" \
-              tools/ffmpeg.c \
+              "$FFMPEG_TOOL_SRC" \
               -Wl,--whole-archive $ARGS_WHOLE -Wl,--no-whole-archive \
               -L"$PREFIX_ABS/lib" -ldav1d \
               -ldl -lm -lz \
