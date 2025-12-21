@@ -251,7 +251,7 @@ jobs:
             --enable-shared \
             --disable-static \
             --disable-doc \
-            --disable-programs \
+            --enable-programs \
             --enable-pic \
             --disable-debug \
             --disable-iconv \
