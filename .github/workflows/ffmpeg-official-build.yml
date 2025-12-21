@@ -210,8 +210,7 @@ jobs:
           export PKG_CONFIG_LIBDIR="$PREFIX_ABS/lib/pkgconfig"
           export PKG_CONFIG_PATH="$PREFIX_ABS/lib/pkgconfig"
 
-          # Enable building ffmpeg tool objects (fftools/*.o) so we can package them into libfftools.so.
-          # Disable other tools to reduce size / avoid symbol clashes.
+          # Build ffmpeg tool objects so we can package them into libfftools.so.
           ac_cv_func_glob=no ./configure \
             --prefix="$PWD/../android-build/${{ matrix.abi }}" \
             --target-os=android \
@@ -270,17 +269,17 @@ jobs:
             exit 1
           fi
 
-          ALL_OBJS="$(find fftools -maxdepth 1 -name '*.o' -print | tr '\n' ' ')"
+          # IMPORTANT: recurse into fftools subdirs (fftools/graph/*.o provides print_filtergraph)
+          ALL_OBJS="$(find fftools -name '*.o' -print | tr '\n' ' ')"
           if [ -z "$ALL_OBJS" ]; then
-            echo "ERROR: no fftools/*.o found. This FFmpeg config likely skipped building tools."
-            find fftools -maxdepth 1 -type f -print || true
+            echo "ERROR: no fftools object files found."
+            find fftools -type f -maxdepth 3 -print || true
             exit 1
           fi
 
-          echo "=== Found fftools objects ==="
-          ls -la fftools/*.o || true
+          echo "=== Found fftools objects (recursive) ==="
+          find fftools -name '*.o' -maxdepth 4 -print -exec ls -la {} \; || true
 
-          # Build replacement entry object for fftools/ffmpeg.c: rename main -> ffmpeg_main
           echo "=== Building ffmpeg_entry.o with -Dmain=ffmpeg_main ==="
           "$CC" -c -fPIC -O2 -Dmain=ffmpeg_main \
             -I. -I./fftools -I./ffbuild -I./compat \
@@ -292,7 +291,7 @@ jobs:
           # - exclude ffprobe/ffplay objects to avoid duplicate global symbols
           # - replace original fftools/ffmpeg.o with fftools/ffmpeg_entry.o
           OBJS=""
-          for o in fftools/*.o; do
+          while IFS= read -r o; do
             base="$(basename "$o")"
 
             if [ "$base" = "ffprobe.o" ] || [ "$base" = "ffplay.o" ]; then
@@ -310,14 +309,17 @@ jobs:
             fi
 
             OBJS="$OBJS $o"
-          done
+          done < <(find fftools -name '*.o' -print)
+
           OBJS="$OBJS fftools/ffmpeg_entry.o"
 
-          echo "=== Final object list ==="
+          echo "=== Final object list (recursive) ==="
           echo "$OBJS" | tr ' ' '\n' | sed '/^$/d'
           echo "count=$(echo "$OBJS" | wc -w)"
 
-          # Link libfftools.so (shared-first): depends on libav*.so at runtime
+          # Link libfftools.so (shared-first)
+          # NOTE: We intentionally DO NOT add -Wl,-z,defs here to keep behavior consistent with your previous script.
+          # If you want CI to fail early on undefined symbols, add: -Wl,-z,defs
           set +e
           "$CC" -shared -fPIC -O2 \
             -Wl,-soname=libfftools.so \
