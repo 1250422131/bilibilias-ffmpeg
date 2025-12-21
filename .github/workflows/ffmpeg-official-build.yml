@@ -1,5 +1,6 @@
-# Build FFmpeg for Android (multi-ABI), produce libfftools.so, install headers, remove .a before upload
-name: Build FFmpeg for Android (multi-ABI, shared+static, 16KB page, libfftools)
+# Build AV1 FFmpeg for Android (multi-ABI), produce libfftools.so with static-fallback,
+# install headers/pkg-config, and remove .a files before uploading artifacts.
+name: Build AV1 FFmpeg for Android (multi-ABI, shared+static, 16KB page, libfftools)
 
 on:
   workflow_dispatch:
@@ -16,10 +17,6 @@ on:
         description: "Min Android API level to build against (e.g. 26 for Android 8)"
         required: true
         default: "26"
-      internal-version:
-        description: "Internal version tag (e.g. 1.0.0)"
-        required: false
-        default: "1.0.0"
 
 jobs:
   build:
@@ -123,6 +120,7 @@ jobs:
 
       - name: Create pkg-config wrapper for dav1d build
         run: |
+          # Create a fake pkg-config for dav1d build that returns nothing
           mkdir -p bin
           cat > bin/pkg-config-fake <<'EOF'
           #!/bin/bash
@@ -162,7 +160,6 @@ jobs:
           set -e
           DAV1D_VER=1.2.1
           PREFIX_ABS="$PWD/android-libs/${{ matrix.abi }}"
-
           mkdir -p deps && cd deps
           if [ ! -d dav1d ]; then
             git clone --branch $DAV1D_VER --depth 1 https://code.videolan.org/videolan/dav1d.git
@@ -211,13 +208,12 @@ jobs:
         run: |
           set -e
           mkdir -p ../android-build/${{ matrix.abi }}
-
           PREFIX_ABS="$PWD/../android-libs/${{ matrix.abi }}"
-
           export PKG_CONFIG=/usr/bin/pkg-config
           export PKG_CONFIG_LIBDIR="$PREFIX_ABS/lib/pkgconfig"
           export PKG_CONFIG_PATH="$PREFIX_ABS/lib/pkgconfig"
 
+          # Enable both shared and static so we can fallback to static linking of internal objects when needed
           ac_cv_func_glob=no ./configure \
             --prefix="$PWD/../android-build/${{ matrix.abi }}" \
             --target-os=android \
@@ -236,6 +232,7 @@ jobs:
             --enable-shared \
             --enable-static \
             --disable-doc \
+            --disable-programs \
             --enable-pic \
             --disable-debug \
             --disable-iconv \
@@ -263,36 +260,34 @@ jobs:
         working-directory: ffmpeg-src
         run: |
           set -e
-          echo "=== Build libfftools for ${{ matrix.abi }} (attempt shared link first, then fallback to static archives) ==="
-
-          PREFIX_ABS="$PWD/../android-libs/${{ matrix.abi }}"      # dav1d prefix
-          FFMPEG_PREFIX="$PWD/../android-build/${{ matrix.abi }}"  # ffmpeg install prefix (headers + libs)
+          echo "=== Build libfftools for ${{ matrix.abi }} (shared first, fallback to static .a using --whole-archive) ==="
+          PREFIX_ABS="$PWD/../android-libs/${{ matrix.abi }}"
+          FFMPEG_PREFIX="$PWD/../android-build/${{ matrix.abi }}"
           ABI_LIB_DIR="$FFMPEG_PREFIX/lib"
           mkdir -p "$ABI_LIB_DIR"
 
           FFMPEG_TOOL_SRC="fftools/ffmpeg.c"
-
           if [ ! -f "$FFMPEG_TOOL_SRC" ]; then
-            echo "ERROR: source $FFMPEG_TOOL_SRC not found in ffmpeg-src. Available fftools/ directory listing:"
+            echo "ERROR: $FFMPEG_TOOL_SRC not found. Listing fftools/"
             ls -la fftools || true
             exit 1
           fi
 
-          # Patch fftools/ffmpeg.c: rename main and replace exit_program -> return
+          # Patch fftools/ffmpeg.c in-place (save original)
           cp -v "$FFMPEG_TOOL_SRC" "${FFMPEG_TOOL_SRC}.orig" || true
           sed -i 's/\bint[[:space:]]\+main[[:space:]]*(/int ffmpeg_main(/g' "$FFMPEG_TOOL_SRC" || true
           sed -i -E 's/\bexit_program\s*\(\s*([^)]+)\s*\)/return (\1)/g' "$FFMPEG_TOOL_SRC" || true
-          echo "=== Diff of changes (if any) ==="
+          echo "=== Diff (if any) ==="
           diff -u "${FFMPEG_TOOL_SRC}.orig" "$FFMPEG_TOOL_SRC" || true
 
           INCLUDE_DIR="$FFMPEG_PREFIX/include"
           DAV1D_INCLUDE="$PREFIX_ABS/include"
 
           echo "CC = $CC"
-          echo "Using include dirs: $INCLUDE_DIR $DAV1D_INCLUDE"
-          echo "Using lib dirs: $ABI_LIB_DIR $PREFIX_ABS/lib"
+          echo "Include dirs: $INCLUDE_DIR $DAV1D_INCLUDE"
+          echo "Lib dirs: $ABI_LIB_DIR $PREFIX_ABS/lib"
 
-          # 1) Try linking against shared libav*.so first (simple path)
+          # Attempt shared linking first
           set +e
           "$CC" -shared -fPIC -O2 -Wl,-z,max-page-size=16384 \
             -I"$PWD" -I"$INCLUDE_DIR" -I"$DAV1D_INCLUDE" \
@@ -305,14 +300,14 @@ jobs:
           set -e
 
           if [ $rc -eq 0 ]; then
-            echo "=== libfftools.so built (shared link) ==="
+            echo "=== libfftools.so built by linking against shared libs ==="
             ls -lh "$ABI_LIB_DIR/libfftools.so" || true
           else
-            echo "=== Shared link failed, see build-libfftools-shared.log ==="
+            echo "=== Shared link failed; printing first 200 lines of build-libfftools-shared.log ==="
             sed -n '1,200p' build-libfftools-shared.log || true
-            echo "=== Attempting fallback: link with FFmpeg static archives (.a) using --whole-archive ==="
+            echo "=== Attempting static fallback: include FFmpeg .a archives using --whole-archive ==="
 
-            # Collect static archives produced by FFmpeg install
+            # Collect static archives (.a) produced by install
             STATIC_ARCS=()
             for lib in libavcodec.a libavformat.a libavutil.a libswresample.a libswscale.a libavfilter.a libavdevice.a; do
               if [ -f "$ABI_LIB_DIR/$lib" ]; then
@@ -321,13 +316,12 @@ jobs:
             done
 
             if [ ${#STATIC_ARCS[@]} -eq 0 ]; then
-              echo "No static archives found in $ABI_LIB_DIR; cannot perform static fallback."
-              echo "Listing $ABI_LIB_DIR:"
+              echo "No static archives found in $ABI_LIB_DIR; cannot perform fallback."
               ls -la "$ABI_LIB_DIR" || true
-              echo "Failing the job."
               exit 1
             fi
 
+            # Build with whole-archive of static libs to ensure internal symbols are available
             ARGS_WHOLE=""
             for a in "${STATIC_ARCS[@]}"; do
               ARGS_WHOLE="$ARGS_WHOLE $a"
@@ -341,14 +335,14 @@ jobs:
               -ldl -lm -lz \
               -o "$ABI_LIB_DIR/libfftools.so" 2> build-libfftools-static.log || true
 
-            echo "=== Fallback link logs (static) ==="
+            echo "=== Static fallback logs (first 200 lines) ==="
             sed -n '1,200p' build-libfftools-static.log || true
+
             if [ -f "$ABI_LIB_DIR/libfftools.so" ]; then
-              echo "=== libfftools.so created with static fallback ==="
+              echo "=== libfftools.so created using static fallback ==="
               ls -lh "$ABI_LIB_DIR/libfftools.so" || true
             else
-              echo "=== FATAL: libfftools.so was not produced by fallback ==="
-              echo "Listing libs in $ABI_LIB_DIR:"
+              echo "=== FATAL: libfftools.so not produced by fallback ==="
               ls -la "$ABI_LIB_DIR" || true
               exit 1
             fi
@@ -372,8 +366,7 @@ jobs:
           extern "C" {
           #endif
 
-          /* Entry point renamed from main() to ffmpeg_main() by the build script.
-             Call this function with argc/argv to run ffmpeg tool logic inside your process. */
+          /* Entry point renamed from main() to ffmpeg_main(). */
           int ffmpeg_main(int argc, char **argv);
 
           #ifdef __cplusplus
@@ -458,99 +451,3 @@ jobs:
         with:
           name: ffmpeg-android-${{ matrix.abi }}-api${{ env.MIN_API_LEVEL }}
           path: android-build/${{ matrix.abi }}
-
-  package-and-release:
-    needs: build
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: Create final package structure
-        run: |
-          set -e
-
-          # Create the ffmpeg directory structure
-          mkdir -p ffmpeg/arm64-v8a/lib
-          mkdir -p ffmpeg/armeabi-v7a/lib
-          mkdir -p ffmpeg/x86_64/lib
-          mkdir -p ffmpeg/include
-
-          # Copy libraries for each ABI
-          echo "=== Copying arm64-v8a libraries ==="
-          cp -v artifacts/ffmpeg-android-arm64-v8a-api${{ github.event.inputs.min-api-level }}/lib/*.so ffmpeg/arm64-v8a/lib/ || true
-
-          echo "=== Copying armeabi-v7a libraries ==="
-          cp -v artifacts/ffmpeg-android-armeabi-v7a-api${{ github.event.inputs.min-api-level }}/lib/*.so ffmpeg/armeabi-v7a/lib/ || true
-
-          echo "=== Copying x86_64 libraries ==="
-          cp -v artifacts/ffmpeg-android-x86_64-api${{ github.event.inputs.min-api-level }}/lib/*.so ffmpeg/x86_64/lib/ || true
-
-          # Copy include files from arm64-v8a (they should be the same for all ABIs)
-          echo "=== Copying include headers ==="
-          cp -rv artifacts/ffmpeg-android-arm64-v8a-api${{ github.event.inputs.min-api-level }}/include/* ffmpeg/include/ || true
-
-          # Create version file
-          echo "${{ github.event.inputs.internal-version }}" > ffmpeg/as-ffmpeg-version
-
-          # Show the final structure
-          echo "=== Final package structure ==="
-          tree ffmpeg || find ffmpeg -type f
-
-      - name: Create release archive
-        run: |
-          set -e
-          ARCHIVE_NAME="ffmpeg-android-${{ github.event.inputs.internal-version }}.tar.gz"
-          tar -czf "$ARCHIVE_NAME" ffmpeg
-          echo "ARCHIVE_NAME=$ARCHIVE_NAME" >> $GITHUB_ENV
-          ls -lh "$ARCHIVE_NAME"
-          tar -tzf "$ARCHIVE_NAME" | head -20
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ github.event.inputs.internal-version }}
-          name: AS FFmpeg Android v${{ github.event.inputs.internal-version }}
-          body: |
-            ## AS FFmpeg Android Build
-
-            此构建在 FFmpeg 源码基础上为 Android 交叉编译，并生成 libfftools.so（ffmpeg_main 函数），仅供仓库开发者使用。
-
-            **Internal Version:** ${{ github.event.inputs.internal-version }}
-            **FFmpeg Version:** ${{ github.event.inputs.ffmpeg-tag }}
-            **NDK Version:** ${{ github.event.inputs.ndk-version }}
-            **Min API Level:** ${{ github.event.inputs.min-api-level }}
-
-            ### Included ABIs
-            - arm64-v8a
-            - armeabi-v7a
-            - x86_64
-
-            ### Features
-            - Built with dav1d (AV1 decoder)
-            - 16KB page size support
-            - Shared libraries (.so)
-            - libfftools.so (ffmpeg_main entry)
-            - No iconv dependencies
-
-            ### Package Structure
-            ```
-            ffmpeg/
-            ├── arm64-v8a/lib/
-            ├── armeabi-v7a/lib/
-            ├── x86_64/lib/
-            ├── include/
-            └── as-ffmpeg-version
-            ```
-          files: ${{ env.ARCHIVE_NAME }}
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
