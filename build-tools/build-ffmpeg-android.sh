@@ -43,49 +43,27 @@ on_error() {
   local exit_code=$?
   local line="$1"
   echo "Build failed on line ${line} with exit code ${exit_code}" >&2
-  local config_log
-  if [[ -n "$FFMPEG_DIR" ]]; then
+  local config_log=""
+  if [[ -n "${FFMPEG_DIR:-}" ]]; then
     config_log="$FFMPEG_DIR/ffbuild/config.log"
   fi
-  if [[ -n "${config_log:-}" && -f "$config_log" ]]; then
+  if [[ -n "$config_log" && -f "$config_log" ]]; then
     echo "=== Tail of ffbuild/config.log ===" >&2
     tail -200 "$config_log" >&2
   fi
   exit "$exit_code"
 }
-
 trap 'on_error $LINENO' ERR
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --abi)
-      REQUESTED_ABIS+=("$2")
-      shift 2
-      ;;
-    --ffmpeg-tag)
-      FFMPEG_TAG="$2"
-      shift 2
-      ;;
-    --ndk-version)
-      NDK_VERSION="$2"
-      shift 2
-      ;;
-    --min-api-level)
-      MIN_API_LEVEL="$2"
-      shift 2
-      ;;
-    --jobs)
-      JOBS="$2"
-      shift 2
-      ;;
-    --internal-version)
-      INTERNAL_VERSION="$2"
-      shift 2
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
+    --abi) REQUESTED_ABIS+=("$2"); shift 2 ;;
+    --ffmpeg-tag) FFMPEG_TAG="$2"; shift 2 ;;
+    --ndk-version) NDK_VERSION="$2"; shift 2 ;;
+    --min-api-level) MIN_API_LEVEL="$2"; shift 2 ;;
+    --jobs) JOBS="$2"; shift 2 ;;
+    --internal-version) INTERNAL_VERSION="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
     *)
       echo "Unknown argument: $1" >&2
       usage
@@ -110,11 +88,17 @@ BIN_DIR="$ROOT_DIR/bin"
 MESON_CROSS_DIR="$ROOT_DIR/meson-cross"
 PKG_CONFIG_FAKE="$BIN_DIR/pkg-config-fake"
 DAV1D_VERSION="1.2.1"
+
+# Per-ABI build output dirs (like your old script)
+ANDROID_LIBS_BASE="$ROOT_DIR/android-libs"
+ANDROID_BUILD_BASE="$ROOT_DIR/android-build"
+
+# Final consolidated output
 OUTPUT_DIR="$ROOT_DIR/output"
 FFMPEG_STAGE_DIR="$OUTPUT_DIR/ffmpeg"
 REFERENCE_INCLUDE_DIR=""
-declare -a BUILD_ABIS=()
 
+declare -a BUILD_ABIS=()
 if [[ ${#REQUESTED_ABIS[@]} -eq 0 ]]; then
   BUILD_ABIS=("${DEFAULT_ABIS[@]}")
 else
@@ -142,7 +126,6 @@ install_dependencies() {
     echo "apt-get not available; ensure required build dependencies are installed." >&2
   fi
 }
-
 install_dependencies
 
 ensure_ndk() {
@@ -161,7 +144,7 @@ ensure_ffmpeg() {
     git clone https://github.com/FFmpeg/FFmpeg "$FFMPEG_DIR"
   fi
   pushd "$FFMPEG_DIR" >/dev/null
-  git fetch --tags
+  git fetch --tags --force
   git checkout "$FFMPEG_TAG"
   git rev-parse --short HEAD
   popd >/dev/null
@@ -177,8 +160,8 @@ EOF
 
 set_paths_for_abi() {
   local abi="$1"
-  ANDROID_LIBS_DIR="$ROOT_DIR/android-libs/$abi"
-  ANDROID_BUILD_DIR="$ROOT_DIR/android-build/$abi"
+  ANDROID_LIBS_DIR="$ANDROID_LIBS_BASE/$abi"
+  ANDROID_BUILD_DIR="$ANDROID_BUILD_BASE/$abi"
   MESON_CROSS_FILE="$MESON_CROSS_DIR/android-${abi}.ini"
   DAV1D_PREFIX="$ANDROID_LIBS_DIR"
 }
@@ -228,6 +211,7 @@ setup_toolchain_env() {
       exit 1
       ;;
   esac
+
   AR="$toolchain/bin/llvm-ar"
   RANLIB="$toolchain/bin/llvm-ranlib"
   STRIP="$toolchain/bin/llvm-strip"
@@ -271,13 +255,15 @@ build_dav1d() {
   rm -rf build
   meson setup build \
     --cross-file "$MESON_CROSS_FILE" \
-    --prefix="$DAV1D_PREFIX" \
+    --prefix "$DAV1D_PREFIX" \
     --libdir=lib \
     --buildtype=release \
     --default-library=shared
   ninja -C build
   ninja -C build install
 
+  # Keep dav1d.pc only for the FFmpeg configure step; we will remove pkgconfig from final output later.
+  mkdir -p "$DAV1D_PREFIX/lib/pkgconfig"
   cat > "$DAV1D_PREFIX/lib/pkgconfig/dav1d.pc" <<EOF
 prefix=$DAV1D_PREFIX
 exec_prefix=\${prefix}
@@ -306,12 +292,15 @@ configure_ffmpeg() {
   if [[ "$ARCH" == "arm" || "$ARCH" == "arm64" ]]; then
     neon_flag+=("--enable-neon")
   fi
+
   pushd "$FFMPEG_DIR" >/dev/null
   export PKG_CONFIG="$(command -v pkg-config)"
   export PKG_CONFIG_LIBDIR="$DAV1D_PREFIX/lib/pkgconfig"
   export PKG_CONFIG_PATH="$DAV1D_PREFIX/lib/pkgconfig"
 
   mkdir -p "$ANDROID_BUILD_DIR"
+
+  # Enable ffmpeg tool objects (for libfftools.so), plus shared+static (static only for fallback link)
   ac_cv_func_glob=no ./configure \
     --prefix="$ANDROID_BUILD_DIR" \
     --target-os=android \
@@ -328,9 +317,11 @@ configure_ffmpeg() {
     --sysroot="$SYSROOT" \
     --enable-cross-compile \
     --enable-shared \
-    --disable-static \
+    --enable-static \
     --disable-doc \
-    --disable-programs \
+    --enable-ffmpeg \
+    --disable-ffprobe \
+    --disable-ffplay \
     --enable-pic \
     --disable-debug \
     --disable-iconv \
@@ -339,6 +330,7 @@ configure_ffmpeg() {
     "${neon_flag[@]}" \
     --extra-cflags="-I$DAV1D_PREFIX/include -fPIC" \
     --extra-ldflags="-L$DAV1D_PREFIX/lib -Wl,-z,max-page-size=16384 -Wl,-rpath-link,$DAV1D_PREFIX/lib"
+
   popd >/dev/null
 }
 
@@ -349,9 +341,138 @@ build_ffmpeg() {
   popd >/dev/null
 }
 
+build_libfftools() {
+  pushd "$FFMPEG_DIR" >/dev/null
+
+  local prefix_abs="$DAV1D_PREFIX"
+  local ffmpeg_prefix="$ANDROID_BUILD_DIR"
+  local abi_lib_dir="$ffmpeg_prefix/lib"
+  mkdir -p "$abi_lib_dir"
+
+  if [[ ! -d fftools ]]; then
+    echo "ERROR: fftools/ directory not found in this FFmpeg tree." >&2
+    exit 1
+  fi
+
+  local all_objs
+  all_objs="$(find fftools -name '*.o' -print | tr '\n' ' ')"
+  if [[ -z "$all_objs" ]]; then
+    echo "ERROR: no fftools object files found. Did the build produce ffmpeg tool objects?" >&2
+    find fftools -maxdepth 4 -type f -print || true
+    exit 1
+  fi
+
+  echo "=== Building ffmpeg_entry.o with -Dmain=ffmpeg_main ==="
+  "$CC" -c -fPIC -O2 -Dmain=ffmpeg_main \
+    -I. -I./fftools -I./ffbuild -I./compat \
+    -DHAVE_CONFIG_H \
+    -o fftools/ffmpeg_entry.o fftools/ffmpeg.c
+
+  local objs=""
+  while IFS= read -r o; do
+    local base
+    base="$(basename "$o")"
+
+    if [[ "$base" == "ffprobe.o" || "$base" == "ffplay.o" ]]; then
+      continue
+    fi
+    if [[ "$base" == "ffmpeg.o" ]]; then
+      continue
+    fi
+    if [[ "$base" == "ffmpeg_entry.o" ]]; then
+      continue
+    fi
+
+    objs="$objs $o"
+  done < <(find fftools -name '*.o' -print)
+
+  objs="$objs fftools/ffmpeg_entry.o"
+
+  echo "=== Linking libfftools.so (shared-first) ==="
+  set +e
+  "$CC" -shared -fPIC -O2 \
+    -Wl,-soname=libfftools.so \
+    -Wl,-z,max-page-size=16384 \
+    -o "$abi_lib_dir/libfftools.so" \
+    $objs \
+    -L"$abi_lib_dir" -L"$prefix_abs/lib" \
+    -lavformat -lavcodec -lavutil -lswscale -lswresample -lavfilter -lavdevice \
+    -ldav1d -ldl -lm -lz \
+    2> build-libfftools-shared.log
+  local rc=$?
+  set -e
+
+  if [[ $rc -ne 0 ]]; then
+    echo "=== Shared link failed; first 250 lines ==="
+    sed -n '1,250p' build-libfftools-shared.log || true
+
+    echo "=== Fallback to static archives with --whole-archive ==="
+    local static_arcs=""
+    local lib
+    for lib in libavcodec.a libavformat.a libavutil.a libswresample.a libswscale.a libavfilter.a libavdevice.a; do
+      if [[ -f "$abi_lib_dir/$lib" ]]; then
+        static_arcs="$static_arcs $abi_lib_dir/$lib"
+      fi
+    done
+    if [[ -z "$static_arcs" ]]; then
+      echo "ERROR: No static archives found for fallback in $abi_lib_dir" >&2
+      ls -la "$abi_lib_dir" || true
+      exit 1
+    fi
+
+    "$CC" -shared -fPIC -O2 \
+      -Wl,-soname=libfftools.so \
+      -Wl,-z,max-page-size=16384 \
+      -o "$abi_lib_dir/libfftools.so" \
+      $objs \
+      -Wl,--whole-archive $static_arcs -Wl,--no-whole-archive \
+      -L"$prefix_abs/lib" -ldav1d \
+      -ldl -lm -lz \
+      2> build-libfftools-static.log
+
+    echo "=== Static fallback log; first 250 lines ==="
+    sed -n '1,250p' build-libfftools-static.log || true
+  fi
+
+  echo "=== Built libfftools.so ==="
+  ls -lh "$abi_lib_dir/libfftools.so"
+  echo "=== Verify ffmpeg_main symbol ==="
+  readelf -Ws "$abi_lib_dir/libfftools.so" | grep -E " ffmpeg_main$" || true
+  echo "=== NEEDED deps ==="
+  readelf -d "$abi_lib_dir/libfftools.so" | grep NEEDED || true
+
+  popd >/dev/null
+}
+
+install_libfftools_header() {
+  local abi_include_dir="$ANDROID_BUILD_DIR/include"
+  mkdir -p "$abi_include_dir/libfftools"
+
+  cat > "$abi_include_dir/libfftools/ffmpeg.h" <<'EOF'
+#ifndef LIBFFTOOLS_FFMPEG_H
+#define LIBFFTOOLS_FFMPEG_H
+#ifdef __cplusplus
+extern "C" {
+#endif
+int ffmpeg_main(int argc, char **argv);
+#ifdef __cplusplus
+}
+#endif
+#endif
+EOF
+}
+
 copy_dav1d_so() {
   mkdir -p "$ANDROID_BUILD_DIR/lib"
   cp -v "$DAV1D_PREFIX/lib"/libdav1d.so* "$ANDROID_BUILD_DIR/lib/" || true
+}
+
+cleanup_output_tree() {
+  # Remove .a from final output (static only used for fallback linking)
+  find "$ANDROID_BUILD_DIR/lib" -name '*.a' -print -delete || true
+
+  # Remove pkg-config outputs (you said you don't need lib/pkgconfig nor "lib" folder extras)
+  rm -rf "$ANDROID_BUILD_DIR/lib/pkgconfig" || true
 }
 
 verify_build() {
@@ -367,10 +488,12 @@ verify_build() {
   shopt -s nullglob
   local so_files=("$so_dir"/libav*.so)
   shopt -u nullglob
+
   if [[ ${#so_files[@]} -eq 0 ]]; then
     echo "No libav*.so files produced in $so_dir" >&2
     exit 1
   fi
+
   for so in "${so_files[@]}"; do
     echo "Checking undefined iconv symbols in: $so"
     if readelf -Ws "$so" | grep -E "UND.*iconv_"; then
@@ -379,15 +502,15 @@ verify_build() {
     fi
   done
 
-  echo "=== Built FFmpeg libraries for $ABI ==="
-  ls -lh "$so_dir"
-  for so in "${so_files[@]}"; do
+  echo "=== Built libraries for $ABI ==="
+  ls -lh "$so_dir" || true
+  for so in "$so_dir"/*.so; do
     echo "--- $so ---"
     readelf -d "$so" | grep NEEDED || true
   done
 }
 
-copy_headers() {
+copy_headers_and_config() {
   cp -v "$FFMPEG_DIR/config.h" "$ANDROID_BUILD_DIR/config.h"
 }
 
@@ -399,7 +522,9 @@ stage_final_outputs() {
   local abi="$1"
   local dest_lib_dir="$FFMPEG_STAGE_DIR/$abi/lib"
   mkdir -p "$dest_lib_dir"
-  cp -v "$ANDROID_BUILD_DIR/lib"/*.so "$dest_lib_dir/"
+
+  # stage only shared libs
+  cp -v "$ANDROID_BUILD_DIR/lib"/*.so* "$dest_lib_dir/"
 
   if [[ -z "$REFERENCE_INCLUDE_DIR" ]]; then
     REFERENCE_INCLUDE_DIR="$ANDROID_BUILD_DIR/include"
@@ -423,12 +548,18 @@ for ABI in "${BUILD_ABIS[@]}"; do
   setup_toolchain_env "$ABI"
   write_meson_cross_file
   build_dav1d
+
   clean_ffmpeg
   configure_ffmpeg
   build_ffmpeg
+  build_libfftools
+  install_libfftools_header
+
   copy_dav1d_so
+  cleanup_output_tree
   verify_build
-  copy_headers
+
+  copy_headers_and_config
   write_abi_version_file
   stage_final_outputs "$ABI"
 done
@@ -436,3 +567,5 @@ done
 write_package_version_file
 
 echo "All builds completed. Consolidated output: $FFMPEG_STAGE_DIR"
+echo "Tree:"
+command -v tree >/dev/null 2>&1 && tree "$FFMPEG_STAGE_DIR" || find "$FFMPEG_STAGE_DIR" -maxdepth 4 -type f -print
