@@ -29,6 +29,7 @@ jobs:
         abi: [arm64-v8a, armeabi-v7a, x86_64]
     env:
       MIN_API_LEVEL: ${{ github.event.inputs.min-api-level || '26' }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -44,7 +45,7 @@ jobs:
           nasm -v
           readelf --version
           pkg-config --version
-          
+
       - name: Download Android NDK
         run: |
           NDK_VER="${{ github.event.inputs.ndk-version || 'r27' }}"
@@ -52,15 +53,17 @@ jobs:
           unzip -q -o android-ndk-${NDK_VER}-linux.zip
           echo "NDK=$PWD/android-ndk-${NDK_VER}" >> $GITHUB_ENV
           echo "ANDROID_NDK_VERSION=${NDK_VER}" >> $GITHUB_ENV
-          
+
       - name: Clone FFmpeg
         run: |
+          set -e
+          TAG="${{ github.event.inputs.ffmpeg-tag || 'n8.0' }}"
           git clone https://github.com/FFmpeg/FFmpeg ffmpeg-src
           cd ffmpeg-src
-          git fetch --tags
-          git checkout ${{ github.event.inputs.ffmpeg-tag || 'n8.0' }}
+          git fetch --tags --force
+          git checkout "$TAG"
           git rev-parse --short HEAD
-          
+
       - name: Set up toolchain for ${{ matrix.abi }}
         run: |
           set -e
@@ -68,62 +71,59 @@ jobs:
           TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
           case "${{ matrix.abi }}" in
             arm64-v8a)
-              export ARCH=arm64
-              export CPU=armv8-a
-              export TARGET_HOST=aarch64-linux-android
-              export CROSS_PREFIX="$TOOLCHAIN/bin/aarch64-linux-android-"
-              export CC="$TOOLCHAIN/bin/aarch64-linux-android${MIN_API_LEVEL}-clang"
-              export CXX="$TOOLCHAIN/bin/aarch64-linux-android${MIN_API_LEVEL}-clang++"
-              export MESON_CPU_FAMILY=aarch64
-              export MESON_CPU=armv8-a
+              ARCH=arm64
+              CPU=armv8-a
+              TARGET_HOST=aarch64-linux-android
+              CROSS_PREFIX="$TOOLCHAIN/bin/aarch64-linux-android-"
+              CC="$TOOLCHAIN/bin/aarch64-linux-android${MIN_API_LEVEL}-clang"
+              CXX="$TOOLCHAIN/bin/aarch64-linux-android${MIN_API_LEVEL}-clang++"
+              MESON_CPU_FAMILY=aarch64
+              MESON_CPU=armv8-a
               ;;
             armeabi-v7a)
-              export ARCH=arm
-              export CPU=armv7-a
-              export TARGET_HOST=armv7a-linux-androideabi
-              export CROSS_PREFIX="$TOOLCHAIN/bin/arm-linux-androideabi-"
-              export CC="$TOOLCHAIN/bin/armv7a-linux-androideabi${MIN_API_LEVEL}-clang"
-              export CXX="$TOOLCHAIN/bin/armv7a-linux-androideabi${MIN_API_LEVEL}-clang++"
-              export MESON_CPU_FAMILY=arm
-              export MESON_CPU=armv7-a
+              ARCH=arm
+              CPU=armv7-a
+              TARGET_HOST=armv7a-linux-androideabi
+              CROSS_PREFIX="$TOOLCHAIN/bin/arm-linux-androideabi-"
+              CC="$TOOLCHAIN/bin/armv7a-linux-androideabi${MIN_API_LEVEL}-clang"
+              CXX="$TOOLCHAIN/bin/armv7a-linux-androideabi${MIN_API_LEVEL}-clang++"
+              MESON_CPU_FAMILY=arm
+              MESON_CPU=armv7-a
               ;;
             x86_64)
-              export ARCH=x86_64
-              export CPU=x86-64
-              export TARGET_HOST=x86_64-linux-android
-              export CROSS_PREFIX="$TOOLCHAIN/bin/x86_64-linux-android-"
-              export CC="$TOOLCHAIN/bin/x86_64-linux-android${MIN_API_LEVEL}-clang"
-              export CXX="$TOOLCHAIN/bin/x86_64-linux-android${MIN_API_LEVEL}-clang++"
-              export MESON_CPU_FAMILY=x86_64
-              export MESON_CPU=x86-64
+              ARCH=x86_64
+              CPU=x86-64
+              TARGET_HOST=x86_64-linux-android
+              CROSS_PREFIX="$TOOLCHAIN/bin/x86_64-linux-android-"
+              CC="$TOOLCHAIN/bin/x86_64-linux-android${MIN_API_LEVEL}-clang"
+              CXX="$TOOLCHAIN/bin/x86_64-linux-android${MIN_API_LEVEL}-clang++"
+              MESON_CPU_FAMILY=x86_64
+              MESON_CPU=x86-64
               ;;
           esac
-          export AR="$TOOLCHAIN/bin/llvm-ar"
-          export RANLIB="$TOOLCHAIN/bin/llvm-ranlib"
-          export STRIP="$TOOLCHAIN/bin/llvm-strip"
-          export NM="$TOOLCHAIN/bin/llvm-nm"
-          export LD="$TOOLCHAIN/bin/ld"
-          export SYSROOT="$TOOLCHAIN/sysroot"
-          
-          echo "ARCH=$ARCH" >> $GITHUB_ENV
-          echo "CPU=$CPU" >> $GITHUB_ENV
-          echo "TARGET_HOST=$TARGET_HOST" >> $GITHUB_ENV
-          echo "CROSS_PREFIX=$CROSS_PREFIX" >> $GITHUB_ENV
-          echo "CC=$CC" >> $GITHUB_ENV
-          echo "CXX=$CXX" >> $GITHUB_ENV
-          echo "AR=$AR" >> $GITHUB_ENV
-          echo "RANLIB=$RANLIB" >> $GITHUB_ENV
-          echo "STRIP=$STRIP" >> $GITHUB_ENV
-          echo "NM=$NM" >> $GITHUB_ENV
-          echo "LD=$LD" >> $GITHUB_ENV
-          echo "SYSROOT=$SYSROOT" >> $GITHUB_ENV
-          echo "MESON_CPU_FAMILY=$MESON_CPU_FAMILY" >> $GITHUB_ENV
-          echo "MESON_CPU=$MESON_CPU" >> $GITHUB_ENV
-          
+          AR="$TOOLCHAIN/bin/llvm-ar"
+          RANLIB="$TOOLCHAIN/bin/llvm-ranlib"
+          STRIP="$TOOLCHAIN/bin/llvm-strip"
+          NM="$TOOLCHAIN/bin/llvm-nm"
+          SYSROOT="$TOOLCHAIN/sysroot"
+          {
+            echo "ARCH=$ARCH"
+            echo "CPU=$CPU"
+            echo "TARGET_HOST=$TARGET_HOST"
+            echo "CROSS_PREFIX=$CROSS_PREFIX"
+            echo "CC=$CC"
+            echo "CXX=$CXX"
+            echo "AR=$AR"
+            echo "RANLIB=$RANLIB"
+            echo "STRIP=$STRIP"
+            echo "NM=$NM"
+            echo "SYSROOT=$SYSROOT"
+            echo "MESON_CPU_FAMILY=$MESON_CPU_FAMILY"
+            echo "MESON_CPU=$MESON_CPU"
+          } >> $GITHUB_ENV
+
       - name: Create pkg-config wrapper for dav1d build
         run: |
-          # Create a fake pkg-config for dav1d build that returns nothing
-          # (dav1d doesn't need to find external libs during cross-compile)
           mkdir -p bin
           cat > bin/pkg-config-fake <<'EOF'
           #!/bin/bash
@@ -131,7 +131,7 @@ jobs:
           EOF
           chmod +x bin/pkg-config-fake
           echo "PKG_CONFIG_FAKE=$PWD/bin/pkg-config-fake" >> $GITHUB_ENV
-          
+
       - name: Create meson cross-file for ${{ matrix.abi }}
         run: |
           set -e
@@ -143,16 +143,13 @@ jobs:
           ar = '${{ env.AR }}'
           strip = '${{ env.STRIP }}'
           pkgconfig = '${{ env.PKG_CONFIG_FAKE }}'
-
           [host_machine]
           system = 'android'
           cpu_family = '${{ env.MESON_CPU_FAMILY }}'
           cpu = '${{ env.MESON_CPU }}'
           endian = 'little'
-
           [properties]
           sys_root = '${{ env.SYSROOT }}'
-
           [built-in options]
           c_args = ['-fPIC']
           cpp_args = ['-fPIC']
@@ -160,13 +157,12 @@ jobs:
           cpp_link_args = ['-Wl,-z,max-page-size=16384']
           EOF
           cat meson-cross/android-${{ matrix.abi }}.ini
-          
+
       - name: Build dav1d (AV1 decoder) for ${{ matrix.abi }}
         run: |
           set -e
           DAV1D_VER=1.2.1
           PREFIX_ABS="$PWD/android-libs/${{ matrix.abi }}"
-          
           mkdir -p deps && cd deps
           if [ ! -d dav1d ]; then
             git clone --branch $DAV1D_VER --depth 1 https://code.videolan.org/videolan/dav1d.git
@@ -181,19 +177,14 @@ jobs:
             --default-library=shared
           ninja -C build
           ninja -C build install
-          
-          # Fix pkg-config file - Android doesn't need -lpthread (it's in libc)
+
+          # Fix pkg-config file - Android doesn't need -lpthread
           PC_FILE="$PREFIX_ABS/lib/pkgconfig/dav1d.pc"
-          echo "=== Original dav1d.pc ==="
-          cat "$PC_FILE"
-          
-          # Create a corrected .pc file without pthread
           cat > "$PC_FILE" <<EOF
           prefix=$PREFIX_ABS
           exec_prefix=\${prefix}
           libdir=\${prefix}/lib
           includedir=\${prefix}/include
-
           Name: dav1d
           Description: AV1 decoding library
           Version: 1.2.1
@@ -201,42 +192,23 @@ jobs:
           Libs.private: -ldl -lm
           Cflags: -I\${includedir}
           EOF
-          
-          echo "=== Fixed dav1d.pc ==="
-          cat "$PC_FILE"
-          
-          # Verify the library exists
-          echo "=== Verifying libdav1d.so ==="
-          ls -la "$PREFIX_ABS/lib/libdav1d.so"* || true
-          
+
       - name: Clean before configure
         working-directory: ffmpeg-src
         run: |
           make distclean || true
           git clean -xdf || true
-          
-      - name: Configure FFmpeg for ${{ matrix.abi }} (shared, AV1 decode only)
+
+      - name: Configure FFmpeg for ${{ matrix.abi }} (shared+static, AV1 decode only)
         working-directory: ffmpeg-src
         run: |
           set -e
           mkdir -p ../android-build/${{ matrix.abi }}
-          
           PREFIX_ABS="$PWD/../android-libs/${{ matrix.abi }}"
-          
-          # Setup pkg-config to find dav1d - use real pkg-config here, not fake
           export PKG_CONFIG=/usr/bin/pkg-config
           export PKG_CONFIG_LIBDIR="$PREFIX_ABS/lib/pkgconfig"
           export PKG_CONFIG_PATH="$PREFIX_ABS/lib/pkgconfig"
-          
-          # Test if pkg-config can find dav1d
-          echo "=== Testing pkg-config ==="
-          echo "PKG_CONFIG=$PKG_CONFIG"
-          echo "PKG_CONFIG_LIBDIR=$PKG_CONFIG_LIBDIR"
-          $PKG_CONFIG --exists dav1d && echo "dav1d found" || echo "dav1d NOT found"
-          $PKG_CONFIG --modversion dav1d
-          $PKG_CONFIG --cflags dav1d
-          $PKG_CONFIG --libs dav1d
-          
+
           ac_cv_func_glob=no ./configure \
             --prefix="$PWD/../android-build/${{ matrix.abi }}" \
             --target-os=android \
@@ -253,9 +225,11 @@ jobs:
             --sysroot="${{ env.SYSROOT }}" \
             --enable-cross-compile \
             --enable-shared \
-            --disable-static \
+            --enable-static \
             --disable-doc \
-            --disable-programs \
+            --enable-ffmpeg \
+            --disable-ffprobe \
+            --disable-ffplay \
             --enable-pic \
             --disable-debug \
             --disable-iconv \
@@ -264,34 +238,171 @@ jobs:
             $( [ "${{ env.ARCH }}" = "arm64" -o "${{ env.ARCH }}" = "arm" ] && echo "--enable-neon" ) \
             --extra-cflags="-I$PREFIX_ABS/include -fPIC" \
             --extra-ldflags="-L$PREFIX_ABS/lib -Wl,-z,max-page-size=16384 -Wl,-rpath-link,$PREFIX_ABS/lib"
-            
+
       - name: Show config.log on failure
         if: failure()
         working-directory: ffmpeg-src
         run: |
           echo "=== Last 200 lines of config.log ==="
           tail -200 ffbuild/config.log || true
-          
-      - name: Build FFmpeg for ${{ matrix.abi }}
+
+      - name: Build & install FFmpeg for ${{ matrix.abi }}
         working-directory: ffmpeg-src
         run: |
           set -e
           make -j"$(nproc)"
           make install V=1
-          
-      - name: Copy dav1d library to output
-        run: |
-          set -e
-          cp -v android-libs/${{ matrix.abi }}/lib/libdav1d.so* android-build/${{ matrix.abi }}/lib/ || true
-          
-      - name: Verify AV1 decoder is enabled
+
+      - name: Build libfftools.so from official fftools objects (exports ffmpeg_main)
         working-directory: ffmpeg-src
         run: |
           set -e
-          echo "=== Checking if libdav1d decoder is enabled ==="
-          grep "CONFIG_LIBDAV1D_DECODER 1" config.h && echo "✓ libdav1d decoder is enabled" || echo "✗ libdav1d decoder NOT enabled"
-          grep "CONFIG_LIBDAV1D 1" config.h && echo "✓ libdav1d is enabled" || echo "✗ libdav1d NOT enabled"
-          
+          PREFIX_ABS="$PWD/../android-libs/${{ matrix.abi }}"
+          FFMPEG_PREFIX="$PWD/../android-build/${{ matrix.abi }}"
+          ABI_LIB_DIR="$FFMPEG_PREFIX/lib"
+          mkdir -p "$ABI_LIB_DIR"
+
+          if ! ls fftools >/dev/null 2>&1; then
+            echo "ERROR: fftools/ directory not found in this FFmpeg tree."
+            exit 1
+          fi
+
+          ALL_OBJS="$(find fftools -name '*.o' -print | tr '\n' ' ')"
+          if [ -z "$ALL_OBJS" ]; then
+            echo "ERROR: no fftools object files found."
+            find fftools -type f -maxdepth 3 -print || true
+            exit 1
+          fi
+
+          echo "=== Found fftools objects (recursive) ==="
+          find fftools -name '*.o' -maxdepth 4 -print -exec ls -la {} \; || true
+
+          echo "=== Building ffmpeg_entry.o with -Dmain=ffmpeg_main ==="
+          "$CC" -c -fPIC -O2 -Dmain=ffmpeg_main \
+            -I. -I./fftools -I./ffbuild -I./compat \
+            -DHAVE_CONFIG_H \
+            -o fftools/ffmpeg_entry.o fftools/ffmpeg.c
+
+          OBJS=""
+          while IFS= read -r o; do
+            base="$(basename "$o")"
+
+            if [ "$base" = "ffprobe.o" ] || [ "$base" = "ffplay.o" ]; then
+              echo "Skipping $o (not part of ffmpeg tool)"
+              continue
+            fi
+
+            if [ "$base" = "ffmpeg.o" ]; then
+              echo "Skipping original $o (replaced by ffmpeg_entry.o)"
+              continue
+            fi
+
+            if [ "$base" = "ffmpeg_entry.o" ]; then
+              continue
+            fi
+
+            OBJS="$OBJS $o"
+          done < <(find fftools -name '*.o' -print)
+
+          OBJS="$OBJS fftools/ffmpeg_entry.o"
+
+          echo "=== Final object list (recursive) ==="
+          echo "$OBJS" | tr ' ' '\n' | sed '/^$/d'
+          echo "count=$(echo "$OBJS" | wc -w)"
+
+          set +e
+          "$CC" -shared -fPIC -O2 \
+            -Wl,-soname=libfftools.so \
+            -Wl,-z,max-page-size=16384 \
+            -o "$ABI_LIB_DIR/libfftools.so" \
+            $OBJS \
+            -L"$ABI_LIB_DIR" -L"$PREFIX_ABS/lib" \
+            -lavformat -lavcodec -lavutil -lswscale -lswresample -lavfilter -lavdevice \
+            -ldav1d -ldl -lm -lz \
+            2> build-libfftools-shared.log
+          rc=$?
+          set -e
+
+          if [ $rc -ne 0 ]; then
+            echo "=== Shared link failed; first 250 lines ==="
+            sed -n '1,250p' build-libfftools-shared.log || true
+
+            echo "=== Fallback to static archives with --whole-archive ==="
+            STATIC_ARCS=""
+            for lib in libavcodec.a libavformat.a libavutil.a libswresample.a libswscale.a libavfilter.a libavdevice.a; do
+              if [ -f "$ABI_LIB_DIR/$lib" ]; then
+                STATIC_ARCS="$STATIC_ARCS $ABI_LIB_DIR/$lib"
+              fi
+            done
+            echo "STATIC_ARCS=$STATIC_ARCS"
+            if [ -z "$STATIC_ARCS" ]; then
+              echo "ERROR: No static archives found for fallback in $ABI_LIB_DIR"
+              ls -la "$ABI_LIB_DIR" || true
+              exit 1
+            fi
+
+            "$CC" -shared -fPIC -O2 \
+              -Wl,-soname=libfftools.so \
+              -Wl,-z,max-page-size=16384 \
+              -o "$ABI_LIB_DIR/libfftools.so" \
+              $OBJS \
+              -Wl,--whole-archive $STATIC_ARCS -Wl,--no-whole-archive \
+              -L"$PREFIX_ABS/lib" -ldav1d \
+              -ldl -lm -lz \
+              2> build-libfftools-static.log
+
+            echo "=== Static fallback log; first 250 lines ==="
+            sed -n '1,250p' build-libfftools-static.log || true
+          fi
+
+          echo "=== Built libfftools.so ==="
+          ls -lh "$ABI_LIB_DIR/libfftools.so"
+          echo "=== Verify ffmpeg_main symbol ==="
+          readelf -Ws "$ABI_LIB_DIR/libfftools.so" | grep -E " ffmpeg_main$" || true
+          echo "=== NEEDED deps ==="
+          readelf -d "$ABI_LIB_DIR/libfftools.so" | grep NEEDED || true
+
+      - name: Install libfftools header (no pkg-config)
+        working-directory: ffmpeg-src
+        run: |
+          set -e
+          FFMPEG_PREFIX="$PWD/../android-build/${{ matrix.abi }}"
+          ABI_INCLUDE_DIR="$FFMPEG_PREFIX/include"
+          mkdir -p "$ABI_INCLUDE_DIR/libfftools"
+
+          cat > "$ABI_INCLUDE_DIR/libfftools/ffmpeg.h" <<'EOF'
+          #ifndef LIBFFTOOLS_FFMPEG_H
+          #define LIBFFTOOLS_FFMPEG_H
+          #ifdef __cplusplus
+          extern "C" {
+          #endif
+          int ffmpeg_main(int argc, char **argv);
+          #ifdef __cplusplus
+          }
+          #endif
+          #endif
+          EOF
+
+      - name: Copy dav1d shared library to output
+        run: |
+          set -e
+          cp -v android-libs/${{ matrix.abi }}/lib/libdav1d.so* android-build/${{ matrix.abi }}/lib/ || true
+
+      - name: Remove static archives (.a) from output before upload
+        run: |
+          set -e
+          echo "=== Removing .a files from android-build/${{ matrix.abi }}/lib ==="
+          find android-build/${{ matrix.abi }}/lib -name '*.a' -print -delete || true
+          ls -la android-build/${{ matrix.abi }}/lib || true
+
+      - name: Remove pkg-config output dir before upload
+        run: |
+          set -e
+          echo "=== Removing pkgconfig dir from android-build/${{ matrix.abi }}/lib (if any) ==="
+          rm -rf android-build/${{ matrix.abi }}/lib/pkgconfig || true
+          # also remove empty lib/ directory children if needed (leave lib itself; it contains .so)
+          find android-build/${{ matrix.abi }}/lib -maxdepth 2 -type d -print || true
+
       - name: Verify no iconv references remain
         run: |
           set -e
@@ -305,23 +416,15 @@ jobs:
             fi
           done
           echo "✓ OK: No iconv references found."
-          
+
       - name: List built libraries
         run: |
-          echo "=== Built FFmpeg libraries ==="
-          ls -lh android-build/${{ matrix.abi }}/lib/
+          echo "=== Built libs ==="
+          ls -lh android-build/${{ matrix.abi }}/lib/ || true
           echo ""
-          echo "=== Library dependencies ==="
-          for so in android-build/${{ matrix.abi }}/lib/libav*.so; do
-            echo "--- $so ---"
-            readelf -d "$so" | grep NEEDED || true
-          done
-          
-      - name: Copy config.h and headers to output dir
-        working-directory: ffmpeg-src
-        run: |
-          cp -v config.h ../android-build/${{ matrix.abi }}/config.h
-          
+          echo "=== libfftools deps ==="
+          readelf -d android-build/${{ matrix.abi }}/lib/libfftools.so | grep NEEDED || true
+
       - name: Upload ${{ matrix.abi }} build artifact
         uses: actions/upload-artifact@v4
         with:
@@ -345,45 +448,43 @@ jobs:
       - name: Create final package structure
         run: |
           set -e
-          
-          # Create the ffmpeg directory structure
+
           mkdir -p ffmpeg/arm64-v8a/lib
           mkdir -p ffmpeg/armeabi-v7a/lib
           mkdir -p ffmpeg/x86_64/lib
           mkdir -p ffmpeg/include
-          
-          # Copy libraries for each ABI
-          echo "=== Copying arm64-v8a libraries ==="
-          cp -v artifacts/ffmpeg-android-arm64-v8a-api${{ github.event.inputs.min-api-level }}/lib/*.so ffmpeg/arm64-v8a/lib/
-          
-          echo "=== Copying armeabi-v7a libraries ==="
-          cp -v artifacts/ffmpeg-android-armeabi-v7a-api${{ github.event.inputs.min-api-level }}/lib/*.so ffmpeg/armeabi-v7a/lib/
-          
-          echo "=== Copying x86_64 libraries ==="
-          cp -v artifacts/ffmpeg-android-x86_64-api${{ github.event.inputs.min-api-level }}/lib/*.so ffmpeg/x86_64/lib/
-          
-          # Copy include files from arm64-v8a (they should be the same for all ABIs)
-          echo "=== Copying include headers ==="
-          cp -rv artifacts/ffmpeg-android-arm64-v8a-api${{ github.event.inputs.min-api-level }}/include/* ffmpeg/include/
-          
-          # Create version file
+
+          API="${{ github.event.inputs.min-api-level }}"
+          A64="artifacts/ffmpeg-android-arm64-v8a-api${API}"
+          A32="artifacts/ffmpeg-android-armeabi-v7a-api${API}"
+          X64="artifacts/ffmpeg-android-x86_64-api${API}"
+
+          echo "=== Copying arm64-v8a libs ==="
+          cp -v "$A64/lib/"*.so ffmpeg/arm64-v8a/lib/
+
+          echo "=== Copying armeabi-v7a libs ==="
+          cp -v "$A32/lib/"*.so ffmpeg/armeabi-v7a/lib/
+
+          echo "=== Copying x86_64 libs ==="
+          cp -v "$X64/lib/"*.so ffmpeg/x86_64/lib/
+
+          echo "=== Copying include headers (from arm64-v8a) ==="
+          cp -rv "$A64/include/"* ffmpeg/include/
+
           echo "${{ github.event.inputs.internal-version }}" > ffmpeg/as-ffmpeg-version
-          
-          # Show the final structure
+
           echo "=== Final package structure ==="
           tree ffmpeg || find ffmpeg -type f
-          
+
       - name: Create release archive
         run: |
           set -e
           ARCHIVE_NAME="ffmpeg-android-${{ github.event.inputs.internal-version }}.tar.gz"
           tar -czf "$ARCHIVE_NAME" ffmpeg
           echo "ARCHIVE_NAME=$ARCHIVE_NAME" >> $GITHUB_ENV
-          
-          # Show archive info
           ls -lh "$ARCHIVE_NAME"
-          tar -tzf "$ARCHIVE_NAME" | head -20
-          
+          tar -tzf "$ARCHIVE_NAME" | head -50
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
@@ -393,23 +494,27 @@ jobs:
             ## AS FFmpeg Android Build
 
             此构建未修改任何FFmpeg源代码，仅针对Android进行了交叉编译，仅供[bilibilias](https://github.com/1250422131/bilibilias)开发者使用。
-            
+
             **Internal Version:** ${{ github.event.inputs.internal-version }}
             **FFmpeg Version:** ${{ github.event.inputs.ffmpeg-tag }}
             **NDK Version:** ${{ github.event.inputs.ndk-version }}
             **Min API Level:** ${{ github.event.inputs.min-api-level }}
-            
+
             ### Included ABIs
             - arm64-v8a
             - armeabi-v7a
             - x86_64
-            
+
             ### Features
             - Built with dav1d (AV1 decoder)
             - 16KB page size support
             - Shared libraries (.so)
+            - Includes libfftools.so (exports ffmpeg_main(argc, argv))
+            - Headers included (libfftools/ffmpeg.h)
             - No iconv dependencies
-            
+            - Static archives (.a) removed before artifact upload
+            - pkg-config files removed (no ffmpeg/lib/pkgconfig in release)
+
             ### Package Structure
             ```
             ffmpeg/
