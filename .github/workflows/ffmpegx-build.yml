@@ -90,8 +90,8 @@ jobs:
           mkdir -p "$PREFIX"
           cd dav1d-src
           rm -rf build
-          meson setup build \
-            --cross-file <(cat <<EOF
+          # 1. 生成 cross-file（不含 default-library）
+          cat > android-${{ matrix.abi }}.ini <<EOF
           [binaries]
           c = '${{ env.CC }}'
           cpp = '${{ env.CXX }}'
@@ -106,13 +106,21 @@ jobs:
           [properties]
           sys_root = '${{ env.SYSROOT }}'
           [built-in options]
-          default-library = 'static'
           c_args = ['-fPIC', '-DANDROID']
           cpp_args = ['-fPIC', '-DANDROID']
-          EOF) \
-            --prefix="$PREFIX" --libdir=lib --buildtype=release
-          ninja -C build install
+          c_link_args = ['-Wl,-z,max-page-size=16384']
+          cpp_link_args = ['-Wl,-z,max-page-size=16384']
+          EOF
 
+          # 2. 单独用 --default-library static（兼容旧版）
+          meson setup build \
+            --cross-file android-${{ matrix.abi }}.ini \
+            --prefix="$PREFIX" \
+            --libdir=lib \
+            --buildtype=release \
+            --default-library static
+
+          ninja -C build install
       - name: Configure FFmpeg
         working-directory: ffmpeg-src
         run: |
