@@ -14,12 +14,12 @@ on:
       ffmpeg_tag:
         description: 'FFmpeg git tag'
         required: true
-        default: 'n8.0'
+        default: 'n7.0'
 
 env:
   MIN_API: ${{ github.event.inputs.api || '21' }}
   NDK_VER: ${{ github.event.inputs.ndk || 'r27' }}
-  FFMPEG_TAG: ${{ github.event.inputs.ffmpeg_tag || 'n8.0' }}
+  FFMPEG_TAG: ${{ github.event.inputs.ffmpeg_tag || 'n7.0' }}
 
 jobs:
   build:
@@ -69,6 +69,7 @@ jobs:
               CLANG_PREFIX=x86_64-linux-android${MIN_API}
               ;;
           esac
+          CROSS_PREFIX=$TOOLCHAIN/bin/llvm-
           {
             echo "ARCH=$ARCH"
             echo "CPU=$CPU"
@@ -80,6 +81,7 @@ jobs:
             echo "STRIP=$TOOLCHAIN/bin/llvm-strip"
             echo "NM=$TOOLCHAIN/bin/llvm-nm"
             echo "SYSROOT=$TOOLCHAIN/sysroot"
+            echo "CROSS_PREFIX=$CROSS_PREFIX"
           } >> $GITHUB_ENV
 
       - name: Build dav1d (static)
@@ -121,7 +123,7 @@ jobs:
             --target-os=android \
             --arch="${{ env.ARCH }}" \
             --cpu="${{ env.CPU }}" \
-            --cross-prefix="${{ env.AR%%ar}}" \
+            --cross-prefix="${{ env.CROSS_PREFIX }}" \
             --cc="${{ env.CC }}" \
             --cxx="${{ env.CXX }}" \
             --ar="${{ env.AR }}" \
