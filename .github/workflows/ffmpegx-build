@@ -1,0 +1,203 @@
+name: Build AV1-Only FFmpeg for Android (ffmpeg+ffprobe+libffmpeg.so)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ndk:
+        description: 'Android NDK version'
+        required: true
+        default: 'r27'
+      api:
+        description: 'minSdkVersion'
+        required: true
+        default: '21'
+      ffmpeg_tag:
+        description: 'FFmpeg git tag'
+        required: true
+        default: 'n8.0'
+
+env:
+  MIN_API: ${{ github.event.inputs.api || '21' }}
+  NDK_VER: ${{ github.event.inputs.ndk || 'r27' }}
+  FFMPEG_TAG: ${{ github.event.inputs.ffmpeg_tag || 'n8.0' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [arm64-v8a, armeabi-v7a, x86_64]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y \
+            git wget unzip build-essential pkg-config yasm nasm ninja-build meson python3-pip
+
+      - name: Download Android NDK
+        run: |
+          wget -q https://dl.google.com/android/repository/android-ndk-${NDK_VER}-linux.zip
+          unzip -q android-ndk-${NDK_VER}-linux.zip
+          echo "NDK=$PWD/android-ndk-${NDK_VER}" >> $GITHUB_ENV
+
+      - name: Clone FFmpeg
+        run: |
+          git clone --depth 1 --branch ${FFMPEG_TAG} https://github.com/FFmpeg/FFmpeg ffmpeg-src
+      - name: Clone dav1d
+        run: |
+          git clone --depth 1 --branch 1.2.1 https://code.videolan.org/videolan/dav1d.git dav1d-src
+
+      - name: Export toolchain
+        run: |
+          TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64
+          case "${{ matrix.abi }}" in
+            arm64-v8a)
+              ARCH=arm64; CPU=armv8-a; HOST=aarch64-linux-android
+              CLANG_PREFIX=aarch64-linux-android${MIN_API}
+              ;;
+            armeabi-v7a)
+              ARCH=arm; CPU=armv7-a; HOST=armv7a-linux-androideabi
+              CLANG_PREFIX=armv7a-linux-androideabi${MIN_API}
+              ;;
+            x86_64)
+              ARCH=x86_64; CPU=x86-64; HOST=x86_64-linux-android
+              CLANG_PREFIX=x86_64-linux-android${MIN_API}
+              ;;
+          esac
+          {
+            echo "ARCH=$ARCH"
+            echo "CPU=$CPU"
+            echo "HOST=$HOST"
+            echo "CC=$TOOLCHAIN/bin/${CLANG_PREFIX}-clang"
+            echo "CXX=$TOOLCHAIN/bin/${CLANG_PREFIX}-clang++"
+            echo "AR=$TOOLCHAIN/bin/llvm-ar"
+            echo "RANLIB=$TOOLCHAIN/bin/llvm-ranlib"
+            echo "STRIP=$TOOLCHAIN/bin/llvm-strip"
+            echo "NM=$TOOLCHAIN/bin/llvm-nm"
+            echo "SYSROOT=$TOOLCHAIN/sysroot"
+          } >> $GITHUB_ENV
+
+      - name: Build dav1d (static)
+        run: |
+          PREFIX=$PWD/dav1d-install/${{ matrix.abi }}
+          mkdir -p "$PREFIX"
+          cd dav1d-src
+          rm -rf build
+          meson setup build \
+            --cross-file <(cat <<EOF
+          [binaries]
+          c = '${{ env.CC }}'
+          cpp = '${{ env.CXX }}'
+          ar = '${{ env.AR }}'
+          strip = '${{ env.STRIP }}'
+          pkgconfig = '/bin/false'
+          [host_machine]
+          system = 'android'
+          cpu_family = '${{ matrix.abi == 'arm64-v8a' && 'aarch64' || (matrix.abi == 'armeabi-v7a' && 'arm' || 'x86_64') }}'
+          cpu = '${{ env.CPU }}'
+          endian = 'little'
+          [properties]
+          sys_root = '${{ env.SYSROOT }}'
+          [built-in options]
+          default-library = 'static'
+          c_args = ['-fPIC', '-DANDROID']
+          cpp_args = ['-fPIC', '-DANDROID']
+          EOF) \
+            --prefix="$PREFIX" --libdir=lib --buildtype=release
+          ninja -C build install
+
+      - name: Configure FFmpeg
+        working-directory: ffmpeg-src
+        run: |
+          PREFIX=$PWD/install
+          export PKG_CONFIG_LIBDIR="$PWD/../../dav1d-install/${{ matrix.abi }}/lib/pkgconfig"
+          ./configure \
+            --prefix="$PREFIX" \
+            --target-os=android \
+            --arch="${{ env.ARCH }}" \
+            --cpu="${{ env.CPU }}" \
+            --cross-prefix="${{ env.AR%%ar}}" \
+            --cc="${{ env.CC }}" \
+            --cxx="${{ env.CXX }}" \
+            --ar="${{ env.AR }}" \
+            --ranlib="${{ env.RANLIB }}" \
+            --strip="${{ env.STRIP }}" \
+            --nm="${{ env.NM }}" \
+            --sysroot="${{ env.SYSROOT }}" \
+            --enable-cross-compile \
+            --disable-shared \
+            --enable-static \
+            --disable-doc \
+            --disable-ffplay \
+            --disable-avdevice \
+            --disable-postproc \
+            --enable-ffmpeg \
+            --enable-ffprobe \
+            --enable-pic \
+            --disable-debug \
+            --disable-iconv \
+            --enable-libdav1d \
+            --enable-decoder=libdav1d \
+            --enable-decoder=av1 \
+            --enable-hwaccel=av1_vulkan \
+            --enable-vulkan \
+            --enable-muxer=mp4 \
+            --enable-demuxer=matroska \
+            --enable-protocol=file \
+            --extra-cflags="-fPIC -DANDROID" \
+            --extra-ldflags="-Wl,-z,max-page-size=16384"
+
+      - name: Build & install
+        working-directory: ffmpeg-src
+        run: |
+          make -j$(nproc)
+          make install
+
+      - name: Create single libffmpeg.so
+        working-directory: ffmpeg-src
+        run: |
+          INSTALL=$PWD/install
+          $CC -shared -fPIC -O2 \
+            -Wl,-soname,libffmpeg.so \
+            -Wl,-z,max-page-size=16384 \
+            -o $INSTALL/libffmpeg.so \
+            -Wl,--whole-archive \
+            $INSTALL/lib/libavcodec.a \
+            $INSTALL/lib/libavformat.a \
+            $INSTALL/lib/libavutil.a \
+            $INSTALL/lib/libswresample.a \
+            $INSTALL/lib/libswscale.a \
+            $INSTALL/lib/libavfilter.a \
+            -Wl,--no-whole-archive \
+            -L$PWD/../../dav1d-install/${{ matrix.abi }}/lib -ldav1d -lm -lz -ldl -llog -landroid -lmediandk
+
+      - name: Tidy up – only 3 files
+        working-directory: ffmpeg-src
+        run: |
+          INSTALL=$PWD/install
+          mkdir -p $INSTALL/final
+          mv $INSTALL/bin/ffmpeg   $INSTALL/final/
+          mv $INSTALL/bin/ffprobe  $INSTALL/final/
+          mv $INSTALL/libffmpeg.so $INSTALL/final/
+          rm -rf $INSTALL/bin $INSTALL/lib $INSTALL/include
+          mv $INSTALL/final/* $INSTALL/
+          rmdir $INSTALL/final
+
+      - name: Package
+        run: |
+          mkdir -p /tmp/output
+          cp -r ffmpeg-src/install/* /tmp/output/
+          cd /tmp
+          tar czf ffmpeg-android-${{ matrix.abi }}.tar.gz output/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-android-${{ matrix.abi }}
+          path: /tmp/ffmpeg-android-${{ matrix.abi }}.tar.gz
+          retention-days: 30
